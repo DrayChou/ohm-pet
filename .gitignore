@@ -1,0 +1,12 @@
+target/
+dist/
+archive/
+bundled-pets/
+task_plan.md
+findings.md
+progress.md
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
