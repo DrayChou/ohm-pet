@@ -5,10 +5,18 @@ $Zip = Join-Path $Root "dist/windows/OHM-Pet-windows-x64.zip"
 
 Set-Location $Root
 cargo build --release -p ohm-pet
+$Exe = Join-Path $Root "target/release/ohm-pet.exe"
+$Bytes = [System.IO.File]::ReadAllBytes($Exe)
+$PeOffset = [System.BitConverter]::ToInt32($Bytes, 0x3C)
+$Subsystem = [System.BitConverter]::ToUInt16($Bytes, $PeOffset + 24 + 68)
+if ($Subsystem -ne 2) { throw "Expected Windows GUI subsystem (2), got $Subsystem" }
+$EmbeddedIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($Exe)
+if ($null -eq $EmbeddedIcon) { throw "Windows executable has no embedded application icon" }
+$EmbeddedIcon.Dispose()
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force $Out | Out-Null
-Copy-Item "target/release/ohm-pet.exe" (Join-Path $Out "OHM Pet.exe")
-Copy-Item -Recurse "pets" (Join-Path $Out "pets")
+Copy-Item $Exe (Join-Path $Out "OHM Pet.exe")
+Copy-Item -Recurse "assets/default-pets" (Join-Path $Out "pets")
 Copy-Item "README.md" $Out
 if (Test-Path $Zip) { Remove-Item -Force $Zip }
 Compress-Archive -Path "$Out/*" -DestinationPath $Zip

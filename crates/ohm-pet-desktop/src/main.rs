@@ -1,4 +1,7 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use anyhow::{anyhow, Context, Result};
+use directories::BaseDirs;
 use ohm_pet_core::{
     direction_from_vector, AnimationState, Atlas, BehaviorBrain, BehaviorContext, PetCatalog,
     Preferences, PreferencesStore, StateMachine, CELL_HEIGHT, CELL_WIDTH,
@@ -41,7 +44,7 @@ struct DesktopPet {
     state: StateMachine,
     preferences: Preferences,
     preferences_store: Option<PreferencesStore>,
-    pets_root: PathBuf,
+    pet_roots: Vec<PathBuf>,
     next_autonomous_at: Instant,
     next_pointer_sample_at: Instant,
     tray: Option<TrayIcon>,
@@ -53,7 +56,7 @@ struct DesktopPet {
 }
 
 impl DesktopPet {
-    fn new(pets_root: PathBuf) -> Self {
+    fn new(pet_roots: Vec<PathBuf>) -> Self {
         let preferences_store = PreferencesStore::system();
         let preferences = preferences_store
             .as_ref()
@@ -66,7 +69,7 @@ impl DesktopPet {
             state: StateMachine::new(now),
             preferences,
             preferences_store,
-            pets_root,
+            pet_roots,
             next_autonomous_at: now + Duration::from_secs(14),
             next_pointer_sample_at: now,
             tray: None,
@@ -79,11 +82,11 @@ impl DesktopPet {
     }
 
     fn load_selected_pet(&mut self) -> Result<()> {
-        let catalog = PetCatalog::scan(&self.pets_root).context("scan pet catalog")?;
+        let catalog = PetCatalog::scan_many(&self.pet_roots).context("scan pet catalogs")?;
         let pet = catalog
             .find(&self.preferences.selected_pet_id)
             .or_else(|| catalog.pets().first())
-            .ok_or_else(|| anyhow!("no valid pets found in {}", self.pets_root.display()))?;
+            .ok_or_else(|| anyhow!("no valid pets found in configured pet directories"))?;
         self.preferences.selected_pet_id = pet.manifest.id.clone();
         self.atlas = Some(pet.load_atlas().context("load selected pet atlas")?);
         if let Some(store) = &self.preferences_store {
@@ -119,7 +122,7 @@ impl DesktopPet {
     }
 
     fn create_tray(&mut self) -> Result<TrayIcon> {
-        let catalog = PetCatalog::scan(&self.pets_root)?;
+        let catalog = PetCatalog::scan_many(&self.pet_roots)?;
         let menu = Menu::new();
         let pets_menu = Submenu::new("切换宠物", true);
         for pet in catalog.pets() {
@@ -179,7 +182,7 @@ impl DesktopPet {
     }
 
     fn switch_pet(&mut self, id: &str) {
-        let Ok(catalog) = PetCatalog::scan(&self.pets_root) else {
+        let Ok(catalog) = PetCatalog::scan_many(&self.pet_roots) else {
             return;
         };
         let Some(pet) = catalog.find(id) else {
@@ -222,7 +225,7 @@ impl DesktopPet {
                 }
                 "quit" => event_loop.exit(),
                 "pets:refresh" => {
-                    self.pets_root = find_pets_root();
+                    self.pet_roots = discover_pet_roots();
                     self.tray = self.create_tray().ok();
                 }
                 "topmost:toggle" => {
@@ -512,61 +515,69 @@ fn restored_window_position(
     primary.map(|monitor| monitor.bottom_right(window_size))
 }
 
-fn find_pets_root() -> PathBuf {
+fn discover_pet_roots() -> Vec<PathBuf> {
+    use std::collections::HashSet;
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    let mut add = |path: PathBuf| {
+        if path.is_dir() && seen.insert(path.clone()) {
+            roots.push(path);
+        }
+    };
+
     if let Ok(path) = std::env::var("OHM_PET_HOME") {
-        return PathBuf::from(path);
+        add(PathBuf::from(path));
     }
 
     #[cfg(debug_assertions)]
-    {
-        let source_pets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pets");
-        if source_pets.exists() {
-            return source_pets;
-        }
-    }
+    add(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/default-pets"));
 
+    #[cfg(target_os = "macos")]
+    let mut bundled_fallback = None;
     if let Ok(executable) = std::env::current_exe() {
         if let Some(executable_dir) = executable.parent() {
             #[cfg(target_os = "windows")]
-            {
-                let external = executable_dir.join("pets");
-                if external.exists() {
-                    return external;
-                }
-            }
+            add(executable_dir.join("pets"));
 
             #[cfg(target_os = "macos")]
-            {
-                if let Some(contents_dir) = executable_dir.parent() {
-                    if let Some(bundle_dir) = contents_dir.parent() {
-                        if let Some(application_dir) = bundle_dir.parent() {
-                            let external = application_dir.join("pets");
-                            if external.exists() {
-                                return external;
-                            }
-                        }
-                    }
-                    let bundled = contents_dir.join("Resources/pets");
-                    if bundled.exists() {
-                        return bundled;
-                    }
+            if let Some(contents_dir) = executable_dir.parent() {
+                if let Some(application_dir) = contents_dir.parent().and_then(|path| path.parent())
+                {
+                    add(application_dir.join("pets"));
                 }
+                bundled_fallback = Some(contents_dir.join("Resources/pets"));
             }
 
-            let adjacent = executable_dir.join("pets");
-            if adjacent.exists() {
-                return adjacent;
-            }
+            add(executable_dir.join("pets"));
         }
     }
 
-    PathBuf::from("pets")
+    if let Some(base_dirs) = BaseDirs::new() {
+        let home = base_dirs.home_dir();
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        add(codex_home.join("pets"));
+
+        let claude_home = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude"));
+        add(claude_home.join("pets"));
+        add(base_dirs.config_dir().join("Claude/pets"));
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(bundled) = bundled_fallback {
+        add(bundled);
+    }
+    roots
 }
 
 fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = DesktopPet::new(find_pets_root());
+    let mut app = DesktopPet::new(discover_pet_roots());
     event_loop.run_app(&mut app)?;
     Ok(())
 }

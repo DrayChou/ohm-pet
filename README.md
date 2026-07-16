@@ -1,68 +1,60 @@
 # OHM Pet
 
-OHM Pet is a WebView-free Rust desktop companion for macOS and Windows. It runs existing v2 pet atlases independently from Codex and sleeps between low-frequency animation deadlines.
+[简体中文](README.zh-CN.md) | English
 
-## Current status
+OHM Pet is a lightweight, WebView-free desktop companion written in Rust. It runs Codex v2 pet packages on macOS and Windows without requiring Codex to remain open.
 
-The macOS runtime is functional with:
+## Features
 
-- transparent, borderless, always-on-top native window
-- AppKit-native image composition
-- idle and state animations
-- pointer-directed gaze
-- click-to-jump
-- whole-pet click-and-drag repositioning
-- click-vs-drag detection so a stationary click still jumps
-- native status menu with persisted always-on-top control
-- runtime pet switching
-- saved pet selection and window position
-- context-aware low-frequency behavior based on idle time, pointer proximity and recent interaction
+- Transparent, borderless native window
+- Optional always-on-top mode
+- Whole-pet dragging and click-to-jump
+- Pointer-directed gaze within 1.5 times the pet body size
+- Low-frequency, context-aware idle behavior
+- Native tray menu and runtime pet switching
+- Automatic discovery of local, Codex, and Claude-compatible pet directories
+- Saved pet selection, window position, and topmost preference
+- No browser engine and no continuous 60 FPS render loop
 
-The Windows runtime uses a native Win32 layered window with per-pixel alpha. GitHub Actions publishes a portable Windows x64 test bundle for every push to `main`.
+The macOS renderer uses AppKit. The Windows test backend uses a native Win32 layered window with per-pixel alpha. Windows GUI builds use the Windows subsystem, so double-clicking `OHM Pet.exe` does not open a console window.
 
-## Included pet
+## Default pet and repository layout
 
-The default distribution includes only OHM-1「欧姆鸦」. Add any Codex v2-compatible pet package under the external `pets/` directory and choose “刷新宠物目录” from the tray menu.
+The default distribution contains only OHM-1 Raven:
 
-## Development
-
-```bash
-cargo run -p ohm-pet
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+```text
+assets/default-pets/ohm-raven/
+├── pet.json
+└── spritesheet.webp
 ```
 
-Pet discovery order:
+Important directories:
 
-1. `OHM_PET_HOME` when set
-2. `pets/` beside `OHM Pet.exe` on Windows
-3. `pets/` beside `OHM Pet.app` on macOS
-4. bundled fallback pets inside the macOS app
-
-Override the pet package directory with:
-
-```bash
-OHM_PET_HOME=/path/to/pets cargo run -p ohm-pet
+```text
+assets/default-pets/   Default pet source files tracked in this repository
+crates/ohm-pet-core/   Pet catalog, atlas, behavior, state, and preferences
+crates/ohm-pet-desktop/ Native macOS and Windows desktop runtime
+packaging/             macOS and Windows icons and package metadata
+scripts/               Icon generation and platform packaging scripts
+docs/                  Architecture and implementation notes
+dist/                  Local build output, ignored by Git
 ```
 
-## Build the macOS app
+The generated macOS and Windows packages expose a user-facing `pets/` directory. Put additional Codex-compatible packages there, then choose `刷新宠物目录` from the tray menu. See [Pet packages](docs/pet-packages.md) for the complete format and discovery rules.
 
-```bash
-./scripts/build-macos-app.sh
-open "dist/OHM Pet.app"
-```
+## Pet discovery
 
-The script creates an ad-hoc signed application at `dist/OHM Pet.app`.
+OHM Pet merges all compatible packages it finds. If two packages use the same `id`, the earlier directory wins:
 
-## Build the Windows test bundle
+1. `OHM_PET_HOME`
+2. `assets/default-pets/` during development
+3. `pets/` beside `OHM Pet.exe` or `OHM Pet.app`
+4. `${CODEX_HOME:-~/.codex}/pets`
+5. `${CLAUDE_CONFIG_DIR:-~/.claude}/pets`
+6. the platform Claude application-support `pets/` directory
+7. bundled fallback pets inside the macOS app
 
-On Windows:
-
-```powershell
-./scripts/package-windows.ps1
-```
-
-The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. The `Build` GitHub Actions workflow also publishes it as the `OHM-Pet-windows-x64` artifact.
+Claude Code does not currently define a built-in pet package format. Claude pet directories discovered by OHM Pet accept the Codex v2 contract described below. Shimeji packages that use `actions.xml`, `behaviors.xml`, and separate PNG frames are not yet supported.
 
 ## Pet package contract
 
@@ -72,13 +64,56 @@ pets/<pet-id>/
 └── spritesheet.webp
 ```
 
-Sprite version 2 uses an 8×11 atlas at 1536×2288 pixels with 192×208 cells.
+Sprite version 2 uses an 8 by 11 atlas at 1536 by 2288 pixels, with 192 by 208 pixel cells.
+
+## Development
+
+```bash
+cargo run -p ohm-pet
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Override the pet directories for a development run:
+
+```bash
+OHM_PET_HOME=/path/to/pets cargo run -p ohm-pet
+```
+
+Regenerate the OHM Raven application icons:
+
+```bash
+python3 scripts/generate-icons.py
+```
+
+## Build macOS
+
+```bash
+./scripts/build-macos-app.sh
+open "dist/OHM Pet.app"
+```
+
+The script creates an ad-hoc signed application and an external `dist/pets/` directory.
+
+## Build Windows
+
+On Windows:
+
+```powershell
+./scripts/package-windows.ps1
+```
+
+The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. GitHub Actions also publishes an `OHM-Pet-windows-x64` artifact for every push to `main`.
 
 ## Resource model
 
-- No browser or WebView
-- No continuous 60 FPS render loop
-- Native event loop sleeps with `WaitUntil`
-- Idle animation changes frame every 480 ms
-- Static frames trigger no redraw
-- Frames are lazily converted to native images and cached
+- The native event loop sleeps between deadlines.
+- Idle animation advances every 480 milliseconds.
+- Global pointer position is sampled every 100 milliseconds.
+- A redraw occurs only when the visible frame changes.
+- macOS frames are lazily converted to native images and cached.
+- No Node.js, WebView, or browser process remains resident.
+
+## License
+
+MIT
