@@ -130,10 +130,16 @@ impl StateMachine {
         self.temporary_until = duration.map(|value| now + value);
     }
 
-    pub fn set_direction(&mut self, direction: Option<u8>) {
-        if self.state == AnimationState::Idle {
-            self.direction = direction.map(|value| value % 16);
+    pub fn set_direction(&mut self, direction: Option<u8>) -> bool {
+        if self.state != AnimationState::Idle {
+            return false;
         }
+        let direction = direction.map(|value| value % 16);
+        if self.direction == direction {
+            return false;
+        }
+        self.direction = direction;
+        true
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {

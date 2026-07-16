@@ -18,7 +18,7 @@ The macOS runtime is functional with:
 - saved pet selection and window position
 - context-aware low-frequency behavior based on idle time, pointer proximity and recent interaction
 
-The Windows Win32 layered-window backend is the next platform implementation.
+The Windows runtime uses a native Win32 layered window with per-pixel alpha. GitHub Actions publishes a portable Windows x64 test bundle for every push to `main`.
 
 ## Included pets
 
@@ -49,6 +49,16 @@ open "dist/OHM Pet.app"
 ```
 
 The script creates an ad-hoc signed application at `dist/OHM Pet.app`.
+
+## Build the Windows test bundle
+
+On Windows:
+
+```powershell
+./scripts/package-windows.ps1
+```
+
+The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. The `Build` GitHub Actions workflow also publishes it as the `OHM-Pet-windows-x64` artifact.
 
 ## Pet package contract
 

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 directories.workspace = true
+image.workspace = true
 ohm-pet-core = { path = "../ohm-pet-core" }
 rand.workspace = true
 tray-icon = "0.21"
@@ -18,4 +19,9 @@ objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }

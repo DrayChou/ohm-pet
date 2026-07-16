@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use objc2::{rc::Retained, AnyThread, MainThreadMarker};
-use objc2_app_kit::{NSImage, NSImageScaling, NSImageView, NSView};
+use objc2_app_kit::{NSImage, NSImageScaling, NSImageView, NSView, NSWindow};
 use objc2_foundation::NSData;
 use ohm_pet_core::Atlas;
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ use winit::{
 
 pub struct NativeRenderer {
     image_view: Retained<NSImageView>,
+    window: Retained<NSWindow>,
     images: HashMap<(u32, u32), Retained<NSImage>>,
 }
 
@@ -35,9 +36,25 @@ impl NativeRenderer {
         let content_view = unsafe { &*(handle.ns_view.as_ptr().cast::<NSView>()) };
         image_view.setFrame(content_view.bounds());
         content_view.addSubview(&image_view);
+        let native_window = content_view
+            .window()
+            .ok_or_else(|| anyhow!("AppKit content view is not attached to a window"))?;
         let mut images = HashMap::new();
         images.insert((row, column), image);
-        Ok(Self { image_view, images })
+        Ok(Self {
+            image_view,
+            window: native_window,
+            images,
+        })
+    }
+
+    pub fn pointer_vector(&self) -> (f64, f64) {
+        let point = self.window.mouseLocationOutsideOfEventStream();
+        let bounds = self.image_view.bounds();
+        (
+            point.x - bounds.size.width / 2.0,
+            bounds.size.height / 2.0 - point.y,
+        )
     }
 
     pub fn render(&mut self, atlas: &Atlas, row: u32, column: u32) -> Result<()> {

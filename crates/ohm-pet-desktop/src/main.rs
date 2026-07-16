@@ -9,6 +9,12 @@ mod macos_renderer;
 #[cfg(target_os = "macos")]
 use macos_renderer::NativeRenderer;
 
+#[cfg(target_os = "windows")]
+mod windows_renderer;
+
+#[cfg(target_os = "windows")]
+use windows_renderer::NativeRenderer;
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -34,8 +40,8 @@ struct DesktopPet {
     preferences: Preferences,
     preferences_store: Option<PreferencesStore>,
     pets_root: PathBuf,
-    cursor: PhysicalPosition<f64>,
     next_autonomous_at: Instant,
+    next_pointer_sample_at: Instant,
     tray: Option<TrayIcon>,
     press_window_position: Option<PhysicalPosition<i32>>,
     brain: BehaviorBrain,
@@ -59,8 +65,8 @@ impl DesktopPet {
             preferences,
             preferences_store,
             pets_root,
-            cursor: PhysicalPosition::new(0.0, 0.0),
             next_autonomous_at: now + Duration::from_secs(14),
+            next_pointer_sample_at: now,
             tray: None,
             press_window_position: None,
             brain: BehaviorBrain::default(),
@@ -94,21 +100,20 @@ impl DesktopPet {
         }
     }
 
-    fn set_pointer_direction(&mut self) {
-        if self.state.state() != AnimationState::Idle {
-            return;
+    fn update_pointer_gaze(&mut self, now: Instant) -> bool {
+        if now < self.next_pointer_sample_at {
+            return false;
         }
-        let Some(window) = &self.window else {
-            return;
+        self.next_pointer_sample_at = now + Duration::from_millis(100);
+        let Some(renderer) = &self.renderer else {
+            return false;
         };
-        let size = window.inner_size();
-        let x = self.cursor.x - f64::from(size.width) / 2.0;
-        let y = self.cursor.y - f64::from(size.height) / 2.0;
-        let direction = direction_from_vector(x, y);
-        self.state.set_direction(Some(direction));
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        let (x, y) = renderer.pointer_vector();
+        let body_size = f64::from(CELL_WIDTH.max(CELL_HEIGHT)) * f64::from(self.preferences.scale);
+        let gaze_radius = body_size * 1.5;
+        self.pointer_nearby = x.hypot(y) <= gaze_radius;
+        let direction = self.pointer_nearby.then(|| direction_from_vector(x, y));
+        self.state.set_direction(direction)
     }
 
     fn create_tray(&mut self) -> Result<TrayIcon> {
@@ -186,6 +191,10 @@ impl DesktopPet {
         }
         if let Some(store) = &self.preferences_store {
             let _ = store.save(&self.preferences);
+        }
+        match self.create_tray() {
+            Ok(tray) => self.tray = Some(tray),
+            Err(error) => eprintln!("failed to refresh tray after pet switch: {error:#}"),
         }
     }
 
@@ -344,18 +353,6 @@ impl ApplicationHandler for DesktopPet {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => self.render(),
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = position;
-                self.pointer_nearby = true;
-                self.set_pointer_direction();
-            }
-            WindowEvent::CursorLeft { .. } => {
-                self.pointer_nearby = false;
-                self.state.set_direction(None);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -409,7 +406,7 @@ impl ApplicationHandler for DesktopPet {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.handle_menu_events(event_loop);
         let now = Instant::now();
-        let mut redraw = self.state.tick(now);
+        let mut redraw = self.update_pointer_gaze(now) || self.state.tick(now);
         if self.preferences.autonomous
             && now >= self.next_autonomous_at
             && self.state.state() == AnimationState::Idle
@@ -436,11 +433,12 @@ impl ApplicationHandler for DesktopPet {
                 window.request_redraw();
             }
         }
-        let deadline = if self.preferences.autonomous {
+        let animation_deadline = if self.preferences.autonomous {
             self.state.next_deadline().min(self.next_autonomous_at)
         } else {
             self.state.next_deadline()
         };
+        let deadline = animation_deadline.min(self.next_pointer_sample_at);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }
