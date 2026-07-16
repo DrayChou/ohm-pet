@@ -102,11 +102,14 @@ python3 scripts/generate-icons.py
 ## 构建 macOS 版本
 
 ```bash
-./scripts/build-macos-app.sh
+./scripts/package-macos.sh
 open "dist/OHM Pet.app"
 ```
 
-脚本会生成临时签名的 macOS 应用，以及外部 `dist/pets/` 用户宠物目录。
+当本机存在 `test-fixtures/external/` 时，脚本会生成临时签名的 macOS 应用和两个压缩包：
+
+- `dist/macos/OHM-Pet-macos-lite.zip`，只包含欧姆鸦
+- `dist/macos/OHM-Pet-macos-collection.zip`，包含欧姆鸦和经过安全筛选的本地测试宠物
 
 ## 构建 Windows 版本
 
@@ -116,7 +119,7 @@ open "dist/OHM Pet.app"
 ./scripts/package-windows.ps1
 ```
 
-便携压缩包输出到 `dist/windows/OHM-Pet-windows-x64.zip`。每次推送到 `main` 或创建 Pull Request 后，GitHub Actions 都会生成 Windows 和 macOS 构建产物。推送 `v*` 标签时会自动创建包含两个 ZIP 的 GitHub Release。
+默认便携包输出到 `dist/windows/OHM-Pet-windows-x64-lite.zip`。如果本机存在外部测试素材，脚本还会生成 `OHM-Pet-windows-x64-collection.zip`。每次推送到 `main` 或创建 Pull Request 后，GitHub Actions 都会生成许可证安全的精简版 Windows 和 macOS 构建产物。推送 `v*` 标签时会自动创建包含两个平台精简包的 GitHub Release。
 
 ## 资源占用策略
 

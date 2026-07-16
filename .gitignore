@@ -8,6 +8,7 @@ findings.md
 progress.md
 .DS_Store
 *.log
+__pycache__/
 .env
 .env.*
 !.env.example

@@ -14,6 +14,12 @@ cp -R "$ROOT/assets/default-pets/." "$STAGE/pets/"
 cp "$ROOT/README.md" "$ROOT/README.zh-CN.md" "$STAGE/"
 find "$STAGE" -name .DS_Store -delete
 mkdir -p "$OUT"
-rm -f "$OUT/OHM-Pet-macos.zip"
-ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$OUT/OHM-Pet-macos.zip"
-echo "$OUT/OHM-Pet-macos.zip"
+LITE_ZIP="$OUT/OHM-Pet-macos-lite.zip"
+COLLECTION_ZIP="$OUT/OHM-Pet-macos-collection.zip"
+rm -f "$LITE_ZIP" "$COLLECTION_ZIP"
+ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$LITE_ZIP"
+echo "$LITE_ZIP"
+if [[ -d "$ROOT/test-fixtures/external" ]]; then
+  python3 "$ROOT/scripts/make-collection-archive.py" \
+    "$LITE_ZIP" "$ROOT/test-fixtures/external" "$COLLECTION_ZIP"
+fi

@@ -101,11 +101,14 @@ python3 scripts/generate-icons.py
 ## Build macOS
 
 ```bash
-./scripts/build-macos-app.sh
+./scripts/package-macos.sh
 open "dist/OHM Pet.app"
 ```
 
-The script creates an ad-hoc signed application and an external `dist/pets/` directory.
+The script creates an ad-hoc signed application and two local archives when `test-fixtures/external/` is available:
+
+- `dist/macos/OHM-Pet-macos-lite.zip`, containing only OHM Raven
+- `dist/macos/OHM-Pet-macos-collection.zip`, containing OHM Raven and sanitized local test pets
 
 ## Build Windows
 
@@ -115,7 +118,7 @@ On Windows:
 ./scripts/package-windows.ps1
 ```
 
-The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. GitHub Actions publishes Windows and macOS artifacts for every push to `main` and every pull request. Pushing a `v*` tag creates a GitHub Release with both ZIP files.
+The portable default archive is written to `dist/windows/OHM-Pet-windows-x64-lite.zip`. If local external fixtures exist, the script also writes `OHM-Pet-windows-x64-collection.zip`. GitHub Actions publishes license-safe lite Windows and macOS artifacts for every push to `main` and every pull request. Pushing a `v*` tag creates a GitHub Release with both lite platform ZIP files.
 
 ## Resource model
 

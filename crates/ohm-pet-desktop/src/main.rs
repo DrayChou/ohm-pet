@@ -861,13 +861,11 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
                     window.request_redraw();
                 }
             }
-            WindowEvent::Moved(position) => {
-                if self.roam.is_none() {
-                    self.preferences.window_x = Some(position.x);
-                    self.preferences.window_y = Some(position.y);
-                    if let Some(store) = &self.preferences_store {
-                        let _ = store.save(&self.preferences);
-                    }
+            WindowEvent::Moved(position) if self.roam.is_none() => {
+                self.preferences.window_x = Some(position.x);
+                self.preferences.window_y = Some(position.y);
+                if let Some(store) = &self.preferences_store {
+                    let _ = store.save(&self.preferences);
                 }
             }
             _ => {}

@@ -31,8 +31,8 @@ jobs:
         run: ./scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: OHM-Pet-macos
-          path: dist/macos/OHM-Pet-macos.zip
+          name: OHM-Pet-macos-lite
+          path: dist/macos/OHM-Pet-macos-lite.zip
           if-no-files-found: error
 
   windows:
@@ -45,8 +45,8 @@ jobs:
         run: ./scripts/package-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: OHM-Pet-windows-x64
-          path: dist/windows/OHM-Pet-windows-x64.zip
+          name: OHM-Pet-windows-x64-lite
+          path: dist/windows/OHM-Pet-windows-x64-lite.zip
           if-no-files-found: error
 
   release:

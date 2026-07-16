@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Out = Join-Path $Root "dist/windows/OHM-Pet"
-$Zip = Join-Path $Root "dist/windows/OHM-Pet-windows-x64.zip"
+$Zip = Join-Path $Root "dist/windows/OHM-Pet-windows-x64-lite.zip"
+$CollectionZip = Join-Path $Root "dist/windows/OHM-Pet-windows-x64-collection.zip"
 
 Set-Location $Root
 cargo build --release -p ohm-pet
@@ -19,5 +20,11 @@ Copy-Item $Exe (Join-Path $Out "OHM Pet.exe")
 Copy-Item -Recurse "assets/default-pets" (Join-Path $Out "pets")
 Copy-Item "README.md" $Out
 if (Test-Path $Zip) { Remove-Item -Force $Zip }
+if (Test-Path $CollectionZip) { Remove-Item -Force $CollectionZip }
 Compress-Archive -Path "$Out/*" -DestinationPath $Zip
 Write-Output $Zip
+$ExternalPets = Join-Path $Root "test-fixtures/external"
+if (Test-Path $ExternalPets) {
+  python scripts/make-collection-archive.py $Zip $ExternalPets $CollectionZip
+  Write-Output $CollectionZip
+}
