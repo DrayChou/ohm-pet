@@ -9,8 +9,9 @@ use windows::Win32::{
         BLENDFUNCTION, DIB_RGB_COLORS, HGDIOBJ,
     },
     UI::WindowsAndMessaging::{
-        GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, UpdateLayeredWindow,
-        GWL_EXSTYLE, ULW_ALPHA, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+        GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsIconic,
+        IsWindowVisible, IsZoomed, SetWindowLongPtrW, UpdateLayeredWindow, GWL_EXSTYLE, ULW_ALPHA,
+        WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     },
 };
 use winit::{
@@ -37,7 +38,10 @@ impl NativeRenderer {
             SetWindowLongPtrW(
                 hwnd,
                 GWL_EXSTYLE,
-                style | WS_EX_LAYERED.0 as isize | WS_EX_TOOLWINDOW.0 as isize,
+                (style & !(WS_EX_APPWINDOW.0 as isize))
+                    | WS_EX_LAYERED.0 as isize
+                    | WS_EX_NOACTIVATE.0 as isize
+                    | WS_EX_TOOLWINDOW.0 as isize,
             );
         }
         let mut renderer = Self {
@@ -47,6 +51,25 @@ impl NativeRenderer {
         };
         renderer.render(atlas, row, column)?;
         Ok(renderer)
+    }
+
+    pub fn walkable_surface(&self) -> Option<(i32, i32, i32)> {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.is_invalid()
+            || foreground == self.hwnd
+            || !unsafe { IsWindowVisible(foreground).as_bool() }
+            || unsafe { IsIconic(foreground).as_bool() || IsZoomed(foreground).as_bool() }
+        {
+            return None;
+        }
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(foreground, &mut rect) }.is_err()
+            || rect.right - rect.left < 320
+            || rect.bottom - rect.top < 180
+        {
+            return None;
+        }
+        Some((rect.left, rect.right, rect.top))
     }
 
     pub fn pointer_vector(&self) -> (f64, f64) {

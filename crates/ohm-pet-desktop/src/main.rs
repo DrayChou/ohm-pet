@@ -23,6 +23,7 @@ mod windows_renderer;
 #[cfg(target_os = "windows")]
 use windows_renderer::NativeRenderer;
 
+use rand::Rng;
 #[cfg(debug_assertions)]
 use std::path::Path;
 use std::{
@@ -31,16 +32,27 @@ use std::{
     time::{Duration, Instant},
 };
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
 };
+#[cfg(target_os = "windows")]
+use winit::platform::windows::WindowAttributesExtWindows;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    raw_window_handle::{HasWindowHandle, RawWindowHandle},
     window::{Window, WindowId, WindowLevel},
 };
+
+struct RoamPlan {
+    start_x: i32,
+    target_x: i32,
+    y: i32,
+    land_at: Option<Instant>,
+    next_step_at: Instant,
+}
 
 struct DesktopPet {
     window: Option<Arc<Window>>,
@@ -58,6 +70,8 @@ struct DesktopPet {
     last_interaction_at: Instant,
     recent_interactions: u32,
     pointer_nearby: bool,
+    roam: Option<RoamPlan>,
+    next_roam_at: Instant,
 }
 
 impl DesktopPet {
@@ -83,6 +97,8 @@ impl DesktopPet {
             last_interaction_at: now,
             recent_interactions: 0,
             pointer_nearby: false,
+            roam: None,
+            next_roam_at: now + Duration::from_secs(18),
         }
     }
 
@@ -93,7 +109,16 @@ impl DesktopPet {
             .or_else(|| catalog.pets().first())
             .ok_or_else(|| anyhow!("no valid pets found in configured pet directories"))?;
         self.preferences.selected_pet_id = pet.manifest.id.clone();
-        self.atlas = Some(pet.load_atlas().context("load selected pet atlas")?);
+        let costumes = self
+            .preferences
+            .selected_costumes
+            .get(&pet.manifest.id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        self.atlas = Some(
+            pet.load_atlas_with_costumes(costumes)
+                .context("load selected pet atlas")?,
+        );
         if let Some(store) = &self.preferences_store {
             let _ = store.save(&self.preferences);
         }
@@ -126,6 +151,180 @@ impl DesktopPet {
         self.state.set_direction(direction)
     }
 
+    fn update_roaming(&mut self, now: Instant) -> bool {
+        if let Some(mut roam) = self.roam.take() {
+            let Some(window) = self.window.clone() else {
+                return false;
+            };
+            if let Some(land_at) = roam.land_at {
+                if now < land_at {
+                    self.roam = Some(roam);
+                    return false;
+                }
+                window.set_outer_position(PhysicalPosition::new(roam.start_x, roam.y));
+                self.state.set_state(
+                    if roam.target_x >= roam.start_x {
+                        AnimationState::RunningRight
+                    } else {
+                        AnimationState::RunningLeft
+                    },
+                    now,
+                    None,
+                );
+                roam.land_at = None;
+                roam.next_step_at = now;
+                self.roam = Some(roam);
+                return true;
+            }
+            if now < roam.next_step_at {
+                self.roam = Some(roam);
+                return false;
+            }
+            let current_x = window
+                .outer_position()
+                .map_or(roam.start_x, |position| position.x);
+            let difference = roam.target_x - current_x;
+            if difference.abs() <= 4 {
+                window.set_outer_position(PhysicalPosition::new(roam.target_x, roam.y));
+                self.preferences.window_x = Some(roam.target_x);
+                self.preferences.window_y = Some(roam.y);
+                if let Some(store) = &self.preferences_store {
+                    let _ = store.save(&self.preferences);
+                }
+                self.state.set_state(AnimationState::Idle, now, None);
+                self.next_roam_at = now + Duration::from_secs(rand::rng().random_range(18..46));
+                self.next_autonomous_at = now + Duration::from_secs(10);
+                return true;
+            }
+            let next_x = current_x + difference.signum() * 4;
+            window.set_outer_position(PhysicalPosition::new(next_x, roam.y));
+            roam.next_step_at = now + Duration::from_millis(40);
+            self.roam = Some(roam);
+            return true;
+        }
+
+        if !self.preferences.autonomous
+            || now < self.next_roam_at
+            || self.pointer_nearby
+            || self.state.state() != AnimationState::Idle
+        {
+            return false;
+        }
+        let Some(window) = self.window.clone() else {
+            return false;
+        };
+        let Some((surface_left, surface_right, surface_top)) = self
+            .renderer
+            .as_ref()
+            .and_then(NativeRenderer::walkable_surface)
+        else {
+            self.next_roam_at = now + Duration::from_secs(12);
+            return false;
+        };
+        let size = window.outer_size();
+        let min_x = surface_left;
+        let max_x = surface_right - size.width as i32;
+        if max_x - min_x < 96 {
+            self.next_roam_at = now + Duration::from_secs(12);
+            return false;
+        }
+        let current_x = window
+            .outer_position()
+            .map_or(min_x, |position| position.x.clamp(min_x, max_x));
+        let mut rng = rand::rng();
+        let mut target_x = rng.random_range(min_x..=max_x);
+        if (target_x - current_x).abs() < 72 {
+            target_x = if current_x - min_x > max_x - current_x {
+                min_x
+            } else {
+                max_x
+            };
+        }
+        let y = surface_top - size.height as i32 + 4;
+        self.state.set_state(AnimationState::Jumping, now, None);
+        self.roam = Some(RoamPlan {
+            start_x: current_x,
+            target_x,
+            y,
+            land_at: Some(now + Duration::from_millis(520)),
+            next_step_at: now + Duration::from_millis(520),
+        });
+        true
+    }
+
+    fn create_pet_context_menu(&self) -> Result<Menu> {
+        let menu = Menu::new();
+        let catalog = PetCatalog::scan_many(&self.pet_roots)?;
+        let Some(pet) = catalog.find(&self.preferences.selected_pet_id) else {
+            return Ok(menu);
+        };
+        let selected = self
+            .preferences
+            .selected_costumes
+            .get(&pet.manifest.id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if pet.costumes.is_empty() {
+            menu.append(&MenuItem::new("此宠物没有可用换装", false, None))?;
+        } else {
+            menu.append(&MenuItem::with_id(
+                "costume:clear",
+                if selected.is_empty() {
+                    "✓ 默认装扮"
+                } else {
+                    "默认装扮"
+                },
+                true,
+                None,
+            ))?;
+            for costume in &pet.costumes {
+                menu.append(&MenuItem::with_id(
+                    format!("costume:{}", costume.id),
+                    format!(
+                        "{}{}：{}",
+                        if selected.contains(&costume.id) {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        costume.category,
+                        costume.name
+                    ),
+                    true,
+                    None,
+                ))?;
+            }
+        }
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&MenuItem::with_id(
+            "state:roam",
+            "沿前台窗口走一走",
+            true,
+            None,
+        ))?;
+        Ok(menu)
+    }
+
+    fn show_pet_context_menu(&self) {
+        let (Some(window), Ok(menu)) = (&self.window, self.create_pet_context_menu()) else {
+            return;
+        };
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        match handle.as_raw() {
+            #[cfg(target_os = "windows")]
+            RawWindowHandle::Win32(handle) => unsafe {
+                let _ = menu.show_context_menu_for_hwnd(handle.hwnd.get(), None);
+            },
+            #[cfg(target_os = "macos")]
+            RawWindowHandle::AppKit(handle) => unsafe {
+                let _ = menu.show_context_menu_for_nsview(handle.ns_view.as_ptr().cast(), None);
+            },
+            _ => {}
+        }
+    }
+
     fn create_tray(&mut self) -> Result<TrayIcon> {
         let catalog = PetCatalog::scan_many(&self.pet_roots)?;
         let menu = Menu::new();
@@ -151,6 +350,42 @@ impl DesktopPet {
             true,
             None,
         ))?;
+        if let Some(pet) = catalog.find(&self.preferences.selected_pet_id) {
+            if !pet.costumes.is_empty() {
+                let costume_menu = Submenu::new("宠物换装", true);
+                let selected = self
+                    .preferences
+                    .selected_costumes
+                    .get(&pet.manifest.id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                costume_menu.append(&MenuItem::with_id(
+                    "costume:clear",
+                    if selected.is_empty() {
+                        "✓ 默认装扮"
+                    } else {
+                        "默认装扮"
+                    },
+                    true,
+                    None,
+                ))?;
+                for costume in &pet.costumes {
+                    let checked = selected.contains(&costume.id);
+                    costume_menu.append(&MenuItem::with_id(
+                        format!("costume:{}", costume.id),
+                        format!(
+                            "{}{}：{}",
+                            if checked { "✓ " } else { "" },
+                            costume.category,
+                            costume.name
+                        ),
+                        true,
+                        None,
+                    ))?;
+                }
+                menu.append(&costume_menu)?;
+            }
+        }
         let integration_status = IntegrationManager::system()
             .map(|manager| manager.status())
             .unwrap_or_default();
@@ -204,6 +439,12 @@ impl DesktopPet {
         menu.append(&MenuItem::with_id("state:waiting", "等待", true, None))?;
         menu.append(&MenuItem::with_id("state:running", "执行中", true, None))?;
         menu.append(&MenuItem::with_id("state:review", "完成", true, None))?;
+        menu.append(&MenuItem::with_id(
+            "state:roam",
+            "沿前台窗口走一走",
+            true,
+            None,
+        ))?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&MenuItem::with_id(
             "topmost:toggle",
@@ -241,7 +482,13 @@ impl DesktopPet {
         let Some(pet) = catalog.find(id) else {
             return;
         };
-        let Ok(atlas) = pet.load_atlas() else {
+        let costumes = self
+            .preferences
+            .selected_costumes
+            .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let Ok(atlas) = pet.load_atlas_with_costumes(costumes) else {
             return;
         };
         self.preferences.selected_pet_id = id.to_string();
@@ -262,7 +509,64 @@ impl DesktopPet {
         }
     }
 
+    fn toggle_costume(&mut self, costume_id: Option<&str>) {
+        let Ok(catalog) = PetCatalog::scan_many(&self.pet_roots) else {
+            return;
+        };
+        let Some(pet) = catalog.find(&self.preferences.selected_pet_id) else {
+            return;
+        };
+        let mut selected = self
+            .preferences
+            .selected_costumes
+            .get(&pet.manifest.id)
+            .cloned()
+            .unwrap_or_default();
+        match costume_id {
+            None => selected.clear(),
+            Some(id) if selected.iter().any(|value| value == id) => {
+                selected.retain(|value| value != id);
+            }
+            Some(id) => {
+                let Some(costume) = pet.costumes.iter().find(|costume| costume.id == id) else {
+                    return;
+                };
+                let same_category: Vec<&str> = pet
+                    .costumes
+                    .iter()
+                    .filter(|option| option.category == costume.category)
+                    .map(|option| option.id.as_str())
+                    .collect();
+                selected.retain(|value| !same_category.contains(&value.as_str()));
+                selected.push(id.to_owned());
+            }
+        }
+        let Ok(atlas) = pet.load_atlas_with_costumes(&selected) else {
+            return;
+        };
+        if selected.is_empty() {
+            self.preferences.selected_costumes.remove(&pet.manifest.id);
+        } else {
+            self.preferences
+                .selected_costumes
+                .insert(pet.manifest.id.clone(), selected);
+        }
+        self.atlas = Some(atlas);
+        self.renderer = None;
+        if let (Some(window), Some(atlas)) = (&self.window, &self.atlas) {
+            let coordinates = self.state.coordinates();
+            self.renderer =
+                NativeRenderer::attach(window, atlas, coordinates.row, coordinates.column).ok();
+            window.request_redraw();
+        }
+        if let Some(store) = &self.preferences_store {
+            let _ = store.save(&self.preferences);
+        }
+        self.tray = self.create_tray().ok();
+    }
+
     fn apply_agent_signal(&mut self, signal: AgentSignal) {
+        self.roam = None;
         let now = Instant::now();
         match signal.event {
             AgentEvent::Working => self.state.set_state(AnimationState::Running, now, None),
@@ -383,6 +687,16 @@ impl DesktopPet {
                     self.state
                         .set_state(AnimationState::Review, Instant::now(), None)
                 }
+                "state:roam" => {
+                    self.roam = None;
+                    self.state
+                        .set_state(AnimationState::Idle, Instant::now(), None);
+                    self.next_roam_at = Instant::now();
+                }
+                "costume:clear" => self.toggle_costume(None),
+                _ if id.starts_with("costume:") => {
+                    self.toggle_costume(Some(id.trim_start_matches("costume:")))
+                }
                 _ if id.starts_with("pet:") => self.switch_pet(id.trim_start_matches("pet:")),
                 _ => {}
             }
@@ -420,6 +734,8 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
                 WindowLevel::Normal
             })
             .with_active(false);
+        #[cfg(target_os = "windows")]
+        let attributes = attributes.with_skip_taskbar(true);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -495,11 +811,21 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
             WindowEvent::RedrawRequested => self.render(),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => self.show_pet_context_menu(),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(window) = &self.window {
+                if let Some(window) = self.window.clone() {
+                    self.roam = None;
+                    self.next_roam_at = Instant::now() + Duration::from_secs(18);
                     self.press_window_position = window.outer_position().ok();
+                    self.state
+                        .set_state(AnimationState::Jumping, Instant::now(), None);
+                    self.render();
                     let _ = window.drag_window();
                 }
             }
@@ -521,22 +847,27 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
                     });
                 self.last_interaction_at = Instant::now();
                 self.recent_interactions = self.recent_interactions.saturating_add(1).min(8);
-                if !moved {
+                if moved {
+                    self.state
+                        .set_state(AnimationState::Idle, Instant::now(), None);
+                } else {
                     self.state.set_state(
                         AnimationState::Jumping,
                         Instant::now(),
                         Some(Duration::from_millis(1400)),
                     );
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
             WindowEvent::Moved(position) => {
-                self.preferences.window_x = Some(position.x);
-                self.preferences.window_y = Some(position.y);
-                if let Some(store) = &self.preferences_store {
-                    let _ = store.save(&self.preferences);
+                if self.roam.is_none() {
+                    self.preferences.window_x = Some(position.x);
+                    self.preferences.window_y = Some(position.y);
+                    if let Some(store) = &self.preferences_store {
+                        let _ = store.save(&self.preferences);
+                    }
                 }
             }
             _ => {}
@@ -546,7 +877,9 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.handle_menu_events(event_loop);
         let now = Instant::now();
-        let mut redraw = self.update_pointer_gaze(now) || self.state.tick(now);
+        let mut redraw = self.update_pointer_gaze(now);
+        redraw |= self.update_roaming(now);
+        redraw |= self.state.tick(now);
         if self.preferences.autonomous
             && now >= self.next_autonomous_at
             && self.state.state() == AnimationState::Idle
@@ -578,7 +911,22 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
         } else {
             self.state.next_deadline()
         };
-        let deadline = animation_deadline.min(self.next_pointer_sample_at);
+        let roam_deadline = self.roam.as_ref().map_or_else(
+            || {
+                if self.preferences.autonomous
+                    && !self.pointer_nearby
+                    && self.state.state() == AnimationState::Idle
+                {
+                    self.next_roam_at
+                } else {
+                    now + Duration::from_secs(24 * 60 * 60)
+                }
+            },
+            |roam| roam.land_at.unwrap_or(roam.next_step_at),
+        );
+        let deadline = animation_deadline
+            .min(self.next_pointer_sample_at)
+            .min(roam_deadline);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 }

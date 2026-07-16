@@ -8,13 +8,16 @@ OHM Pet 是一个使用 Rust 开发的轻量桌面宠物，支持 macOS 和 Wind
 
 - 透明、无边框的原生窗口
 - 可切换的始终置顶模式
-- 抓住宠物身体即可拖动，单击触发跳跃
+- 抓住宠物身体即可拖动，按住时立即显示被提起的跳跃动作
 - 鼠标进入身体最大尺寸 1.5 倍的范围后，宠物会看向鼠标
 - 根据空闲时间、鼠标距离和近期互动选择低频自主动作
 - 原生状态栏或系统托盘菜单
 - 运行时切换宠物
 - 自动发现本地、Codex 和 Claude 兼容宠物目录
 - 一键接入 Claude Code、Codex 和 Pi Agent 生命周期事件
+- 识别前台窗口上边沿，并偶尔在上面左右移动
+- 直接加载 Shimeji、wl_shimeji、Ukagaka/伪春菜和独立视觉素材
+- 从状态栏或宠物右键菜单切换 Ukagaka bind 叠加服装
 - 保存宠物选择、窗口位置和置顶设置
 - 不运行 60 FPS 持续渲染循环
 
@@ -56,7 +59,7 @@ OHM Pet 会合并所有已发现目录中的兼容宠物。如果多个宠物使
 6. 系统 Claude 应用支持目录下的 `pets/`
 7. macOS 应用包内部的备用宠物
 
-Claude Code 当前没有官方内置的宠物包规范。OHM Pet 在 Claude 目录中查找的仍然是下方所述的 Codex v2 格式。使用 `actions.xml`、`behaviors.xml` 和独立 PNG 帧的 Shimeji 包暂未支持，后续需要单独增加格式适配器。
+Claude Code 当前没有官方内置的宠物包规范。OHM Pet 会在 Claude 目录中加载目录适配器支持的所有格式，包括 Codex v2、Shimeji XML 和独立 PNG、`.wlshm`、Ukagaka Shell 和部分独立视觉素材。详细说明见[外部宠物素材格式](docs/external-pet-formats.zh-CN.md)。
 
 ## Agent 集成
 
@@ -113,7 +116,7 @@ open "dist/OHM Pet.app"
 ./scripts/package-windows.ps1
 ```
 
-便携压缩包输出到 `dist/windows/OHM-Pet-windows-x64.zip`。每次推送到 `main` 分支后，GitHub Actions 也会生成名为 `OHM-Pet-windows-x64` 的构建产物。
+便携压缩包输出到 `dist/windows/OHM-Pet-windows-x64.zip`。每次推送到 `main` 或创建 Pull Request 后，GitHub Actions 都会生成 Windows 和 macOS 构建产物。推送 `v*` 标签时会自动创建包含两个 ZIP 的 GitHub Release。
 
 ## 资源占用策略
 

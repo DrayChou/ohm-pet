@@ -1,4 +1,7 @@
-use crate::Atlas;
+use crate::{
+    external::{discover_external_pets, load_external_atlas, CostumeOption, ExternalSource},
+    Atlas, AtlasError,
+};
 use serde::Deserialize;
 use std::{
     collections::HashSet,
@@ -18,15 +21,41 @@ pub struct PetManifest {
 }
 
 #[derive(Debug, Clone)]
+enum PetSource {
+    Codex,
+    External(ExternalSource),
+}
+
+#[derive(Debug, Clone)]
 pub struct Pet {
     pub manifest: PetManifest,
     pub directory: PathBuf,
+    pub costumes: Vec<CostumeOption>,
+    source: PetSource,
 }
 
 impl Pet {
-    pub fn load_atlas(&self) -> Result<Atlas, crate::AtlasError> {
-        Atlas::load(self.directory.join(&self.manifest.spritesheet_path))
+    pub fn load_atlas(&self) -> Result<Atlas, PetLoadError> {
+        self.load_atlas_with_costumes(&[])
     }
+
+    pub fn load_atlas_with_costumes(&self, costumes: &[String]) -> Result<Atlas, PetLoadError> {
+        match &self.source {
+            PetSource::Codex => Atlas::load(self.directory.join(&self.manifest.spritesheet_path))
+                .map_err(PetLoadError::Atlas),
+            PetSource::External(source) => {
+                load_external_atlas(source, costumes).map_err(PetLoadError::External)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum PetLoadError {
+    #[error(transparent)]
+    Atlas(#[from] AtlasError),
+    #[error("failed to normalize external pet: {0}")]
+    External(String),
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +110,24 @@ impl PetCatalog {
                     pets.push(Pet {
                         manifest,
                         directory: path,
+                        costumes: Vec::new(),
+                        source: PetSource::Codex,
+                    });
+                }
+            }
+            for external in discover_external_pets(root) {
+                if seen_ids.insert(external.id.clone()) {
+                    pets.push(Pet {
+                        manifest: PetManifest {
+                            id: external.id,
+                            display_name: external.display_name,
+                            description: external.description,
+                            sprite_version_number: 0,
+                            spritesheet_path: String::new(),
+                        },
+                        directory: root.to_path_buf(),
+                        costumes: external.costumes,
+                        source: PetSource::External(external.source),
                     });
                 }
             }

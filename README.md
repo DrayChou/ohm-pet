@@ -8,12 +8,15 @@ OHM Pet is a lightweight, WebView-free desktop companion written in Rust. It run
 
 - Transparent, borderless native window
 - Optional always-on-top mode
-- Whole-pet dragging and click-to-jump
+- Whole-pet dragging with an immediate lifted jump pose
 - Pointer-directed gaze within 1.5 times the pet body size
 - Low-frequency, context-aware idle behavior
 - Native tray menu and runtime pet switching
 - Automatic discovery of local, Codex, and Claude-compatible pet directories
 - One-click Claude Code, Codex, and Pi Agent lifecycle integration
+- Foreground-window edge detection and occasional left/right roaming
+- Direct Shimeji, wl_shimeji, Ukagaka/伪春菜, and loose visual asset loading
+- Ukagaka bind-overlay costumes from the tray or pet right-click menu
 - Saved pet selection, window position, and topmost preference
 - No browser engine and no continuous 60 FPS render loop
 
@@ -55,7 +58,7 @@ OHM Pet merges all compatible packages it finds. If two packages use the same `i
 6. the platform Claude application-support `pets/` directory
 7. bundled fallback pets inside the macOS app
 
-Claude Code does not currently define a built-in pet package format. Claude pet directories discovered by OHM Pet accept the Codex v2 contract described below. Shimeji packages that use `actions.xml`, `behaviors.xml`, and separate PNG frames are not yet supported.
+Claude Code does not currently define a built-in pet package format. Claude pet directories discovered by OHM Pet accept every format supported by the catalog, including Codex v2, Shimeji XML plus PNG frames, `.wlshm`, Ukagaka shells, and selected loose visual layouts. See [External pet formats](docs/external-pet-formats.md).
 
 ## Agent integrations
 
@@ -112,7 +115,7 @@ On Windows:
 ./scripts/package-windows.ps1
 ```
 
-The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. GitHub Actions also publishes an `OHM-Pet-windows-x64` artifact for every push to `main`.
+The portable archive is written to `dist/windows/OHM-Pet-windows-x64.zip`. GitHub Actions publishes Windows and macOS artifacts for every push to `main` and every pull request. Pushing a `v*` tag creates a GitHub Release with both ZIP files.
 
 ## Resource model
 

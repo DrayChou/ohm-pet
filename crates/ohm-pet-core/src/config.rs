@@ -1,6 +1,6 @@
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::{fs, io, path::PathBuf};
+use std::{collections::HashMap, fs, io, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -11,6 +11,7 @@ pub struct Preferences {
     pub always_on_top: bool,
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
+    pub selected_costumes: HashMap<String, Vec<String>>,
 }
 
 impl Default for Preferences {
@@ -22,6 +23,7 @@ impl Default for Preferences {
             always_on_top: true,
             window_x: None,
             window_y: None,
+            selected_costumes: HashMap::new(),
         }
     }
 }

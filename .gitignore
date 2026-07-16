@@ -2,6 +2,7 @@ target/
 dist/
 archive/
 bundled-pets/
+test-fixtures/external/
 task_plan.md
 findings.md
 progress.md
