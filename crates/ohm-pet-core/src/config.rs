@@ -16,7 +16,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            selected_pet_id: "ohm-suanni-ivory-reliquary".into(),
+            selected_pet_id: "ohm-raven".into(),
             scale: 0.62,
             autonomous: true,
             always_on_top: true,

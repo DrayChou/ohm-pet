@@ -20,12 +20,9 @@ The macOS runtime is functional with:
 
 The Windows runtime uses a native Win32 layered window with per-pixel alpha. GitHub Actions publishes a portable Windows x64 test bundle for every push to `main`.
 
-## Included pets
+## Included pet
 
-- 玄甲狻猊
-- 圣骨狻猊
-- OHM-1「欧姆鸦」
-- 鉴鉴
+The default distribution includes only OHM-1「欧姆鸦」. Add any Codex v2-compatible pet package under the external `pets/` directory and choose “刷新宠物目录” from the tray menu.
 
 ## Development
 
@@ -34,6 +31,13 @@ cargo run -p ohm-pet
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+Pet discovery order:
+
+1. `OHM_PET_HOME` when set
+2. `pets/` beside `OHM Pet.exe` on Windows
+3. `pets/` beside `OHM Pet.app` on macOS
+4. bundled fallback pets inside the macOS app
 
 Override the pet package directory with:
 

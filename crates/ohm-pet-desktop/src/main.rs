@@ -15,8 +15,10 @@ mod windows_renderer;
 #[cfg(target_os = "windows")]
 use windows_renderer::NativeRenderer;
 
+#[cfg(debug_assertions)]
+use std::path::Path;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -135,6 +137,12 @@ impl DesktopPet {
             ))?;
         }
         menu.append(&pets_menu)?;
+        menu.append(&MenuItem::with_id(
+            "pets:refresh",
+            "刷新宠物目录",
+            true,
+            None,
+        ))?;
         menu.append(&MenuItem::with_id("state:waving", "打个招呼", true, None))?;
         menu.append(&MenuItem::with_id("state:jumping", "跳一下", true, None))?;
         menu.append(&MenuItem::with_id("state:waiting", "等待", true, None))?;
@@ -213,6 +221,10 @@ impl DesktopPet {
                     }
                 }
                 "quit" => event_loop.exit(),
+                "pets:refresh" => {
+                    self.pets_root = find_pets_root();
+                    self.tray = self.create_tray().ok();
+                }
                 "topmost:toggle" => {
                     self.preferences.always_on_top = !self.preferences.always_on_top;
                     if let Some(window) = &self.window {
@@ -504,22 +516,51 @@ fn find_pets_root() -> PathBuf {
     if let Ok(path) = std::env::var("OHM_PET_HOME") {
         return PathBuf::from(path);
     }
-    let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pets");
-    if local.exists() {
-        return local;
+
+    #[cfg(debug_assertions)]
+    {
+        let source_pets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pets");
+        if source_pets.exists() {
+            return source_pets;
+        }
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| {
-            let executable_dir = path.parent()?;
-            let bundled = executable_dir.parent()?.join("Resources/pets");
-            Some(if bundled.exists() {
-                bundled
-            } else {
-                executable_dir.join("pets")
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from("pets"))
+
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(executable_dir) = executable.parent() {
+            #[cfg(target_os = "windows")]
+            {
+                let external = executable_dir.join("pets");
+                if external.exists() {
+                    return external;
+                }
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(contents_dir) = executable_dir.parent() {
+                    if let Some(bundle_dir) = contents_dir.parent() {
+                        if let Some(application_dir) = bundle_dir.parent() {
+                            let external = application_dir.join("pets");
+                            if external.exists() {
+                                return external;
+                            }
+                        }
+                    }
+                    let bundled = contents_dir.join("Resources/pets");
+                    if bundled.exists() {
+                        return bundled;
+                    }
+                }
+            }
+
+            let adjacent = executable_dir.join("pets");
+            if adjacent.exists() {
+                return adjacent;
+            }
+        }
+    }
+
+    PathBuf::from("pets")
 }
 
 fn main() -> Result<()> {
