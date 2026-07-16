@@ -10,6 +10,9 @@ directories.workspace = true
 image.workspace = true
 ohm-pet-core = { path = "../ohm-pet-core" }
 rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml_edit = "0.22"
 tray-icon = "0.21"
 winit = "0.30"
 

@@ -2,6 +2,11 @@
 
 use anyhow::{anyhow, Context, Result};
 use directories::BaseDirs;
+mod agent_ipc;
+mod integrations;
+
+use agent_ipc::{AgentEvent, AgentSignal, UserEvent};
+use integrations::{AgentKind, IntegrationManager};
 use ohm_pet_core::{
     direction_from_vector, AnimationState, Atlas, BehaviorBrain, BehaviorContext, PetCatalog,
     Preferences, PreferencesStore, StateMachine, CELL_HEIGHT, CELL_WIDTH,
@@ -146,6 +151,54 @@ impl DesktopPet {
             true,
             None,
         ))?;
+        let integration_status = IntegrationManager::system()
+            .map(|manager| manager.status())
+            .unwrap_or_default();
+        let integrations_menu = Submenu::new("Agent 集成", true);
+        integrations_menu.append(&MenuItem::with_id(
+            "integration:claude:install",
+            if integration_status.claude {
+                "✓ Claude Code 已接入（点击更新）"
+            } else {
+                "接入 Claude Code"
+            },
+            true,
+            None,
+        ))?;
+        integrations_menu.append(&MenuItem::with_id(
+            "integration:codex:install",
+            if integration_status.codex {
+                "✓ Codex 已接入（点击更新）"
+            } else {
+                "接入 Codex"
+            },
+            true,
+            None,
+        ))?;
+        integrations_menu.append(&MenuItem::with_id(
+            "integration:pi:install",
+            if integration_status.pi {
+                "✓ Pi Agent 已接入（点击更新）"
+            } else {
+                "接入 Pi Agent"
+            },
+            true,
+            None,
+        ))?;
+        integrations_menu.append(&PredefinedMenuItem::separator())?;
+        integrations_menu.append(&MenuItem::with_id(
+            "integration:test",
+            "测试 Agent 动画",
+            true,
+            None,
+        ))?;
+        integrations_menu.append(&MenuItem::with_id(
+            "integration:remove-all",
+            "移除全部 Agent 集成",
+            integration_status.claude || integration_status.codex || integration_status.pi,
+            None,
+        ))?;
+        menu.append(&integrations_menu)?;
         menu.append(&MenuItem::with_id("state:waving", "打个招呼", true, None))?;
         menu.append(&MenuItem::with_id("state:jumping", "跳一下", true, None))?;
         menu.append(&MenuItem::with_id("state:waiting", "等待", true, None))?;
@@ -209,6 +262,51 @@ impl DesktopPet {
         }
     }
 
+    fn apply_agent_signal(&mut self, signal: AgentSignal) {
+        let now = Instant::now();
+        match signal.event {
+            AgentEvent::Working => self.state.set_state(AnimationState::Running, now, None),
+            AgentEvent::Waiting => self.state.set_state(AnimationState::Waiting, now, None),
+            AgentEvent::Completed => self.state.set_state(
+                AnimationState::Review,
+                now,
+                Some(Duration::from_millis(4200)),
+            ),
+            AgentEvent::Failed => self.state.set_state(
+                AnimationState::Failed,
+                now,
+                Some(Duration::from_millis(5200)),
+            ),
+            AgentEvent::Idle => self.state.set_state(AnimationState::Idle, now, None),
+        }
+        if let Some(window) = &self.window {
+            window.set_visible(true);
+            window.request_redraw();
+        }
+    }
+
+    fn run_integration_action(&mut self, action: impl FnOnce(&IntegrationManager) -> Result<()>) {
+        let result = IntegrationManager::system().and_then(|manager| action(&manager));
+        let now = Instant::now();
+        if result.is_ok() {
+            self.state.set_state(
+                AnimationState::Review,
+                now,
+                Some(Duration::from_millis(2200)),
+            );
+        } else {
+            if let Err(error) = result {
+                eprintln!("Agent integration error: {error:#}");
+            }
+            self.state.set_state(
+                AnimationState::Failed,
+                now,
+                Some(Duration::from_millis(4200)),
+            );
+        }
+        self.tray = self.create_tray().ok();
+    }
+
     fn handle_menu_events(&mut self, event_loop: &ActiveEventLoop) {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let id = event.id.0.as_str();
@@ -228,6 +326,27 @@ impl DesktopPet {
                     self.pet_roots = discover_pet_roots();
                     self.tray = self.create_tray().ok();
                 }
+                "integration:claude:install" => {
+                    self.run_integration_action(|manager| manager.install(AgentKind::Claude));
+                }
+                "integration:codex:install" => {
+                    self.run_integration_action(|manager| manager.install(AgentKind::Codex));
+                }
+                "integration:pi:install" => {
+                    self.run_integration_action(|manager| manager.install(AgentKind::Pi));
+                }
+                "integration:remove-all" => {
+                    self.run_integration_action(|manager| {
+                        manager.remove(AgentKind::Claude)?;
+                        manager.remove(AgentKind::Codex)?;
+                        manager.remove(AgentKind::Pi)
+                    });
+                }
+                "integration:test" => self.apply_agent_signal(AgentSignal {
+                    source: "tray".into(),
+                    event: AgentEvent::Completed,
+                    title: Some("Integration test".into()),
+                }),
                 "topmost:toggle" => {
                     self.preferences.always_on_top = !self.preferences.always_on_top;
                     if let Some(window) = &self.window {
@@ -274,7 +393,7 @@ impl DesktopPet {
     }
 }
 
-impl ApplicationHandler for DesktopPet {
+impl ApplicationHandler<UserEvent> for DesktopPet {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -350,6 +469,12 @@ impl ApplicationHandler for DesktopPet {
             Err(error) => eprintln!("tray unavailable: {error:#}"),
         }
         window.request_redraw();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::AgentSignal(signal) => self.apply_agent_signal(signal),
+        }
     }
 
     fn window_event(
@@ -574,9 +699,64 @@ fn discover_pet_roots() -> Vec<PathBuf> {
     roots
 }
 
+struct SignalCommand {
+    signal: AgentSignal,
+    codex_payload: Option<String>,
+}
+
+fn parse_signal_command(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<Option<SignalCommand>> {
+    let mut arguments = arguments.into_iter();
+    if arguments.next().as_deref() != Some("signal") {
+        return Ok(None);
+    }
+    let mut source = None;
+    let mut event = None;
+    let mut title = None;
+    let mut codex_payload = None;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--source" => source = arguments.next(),
+            "--event" => event = arguments.next(),
+            "--title" => title = arguments.next(),
+            "--integration" => {
+                let _ = arguments.next();
+            }
+            value if value.starts_with('{') => codex_payload = Some(value.to_owned()),
+            value => return Err(anyhow!("unsupported signal argument: {value}")),
+        }
+    }
+    let source = source.ok_or_else(|| anyhow!("signal requires --source"))?;
+    let event = event
+        .ok_or_else(|| anyhow!("signal requires --event"))?
+        .parse::<AgentEvent>()?;
+    Ok(Some(SignalCommand {
+        signal: AgentSignal {
+            source,
+            event,
+            title,
+        },
+        codex_payload,
+    }))
+}
+
 fn main() -> Result<()> {
-    let event_loop = EventLoop::new()?;
+    if let Some(command) = parse_signal_command(std::env::args().skip(1))? {
+        agent_ipc::send_signal(&command.signal)?;
+        if command.signal.source == "codex" {
+            if let Some(payload) = command.codex_payload {
+                IntegrationManager::system()?.forward_previous_codex_notify(&payload)?;
+            }
+        }
+        return Ok(());
+    }
+
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    if let Err(error) = agent_ipc::spawn_signal_listener(event_loop.create_proxy()) {
+        eprintln!("Agent event listener unavailable: {error:#}");
+    }
     let mut app = DesktopPet::new(discover_pet_roots());
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -585,6 +765,28 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_agent_signal_command_and_codex_payload() {
+        let command = parse_signal_command([
+            "signal".into(),
+            "--source".into(),
+            "codex".into(),
+            "--event".into(),
+            "completed".into(),
+            "--integration".into(),
+            "ohm-pet".into(),
+            r#"{"type":"agent-turn-complete"}"#.into(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(command.signal.source, "codex");
+        assert_eq!(command.signal.event, AgentEvent::Completed);
+        assert!(command
+            .codex_payload
+            .unwrap()
+            .contains("agent-turn-complete"));
+    }
 
     #[test]
     fn keeps_a_visible_physical_position() {

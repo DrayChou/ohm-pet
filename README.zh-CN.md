@@ -14,6 +14,7 @@ OHM Pet 是一个使用 Rust 开发的轻量桌面宠物，支持 macOS 和 Wind
 - 原生状态栏或系统托盘菜单
 - 运行时切换宠物
 - 自动发现本地、Codex 和 Claude 兼容宠物目录
+- 一键接入 Claude Code、Codex 和 Pi Agent 生命周期事件
 - 保存宠物选择、窗口位置和置顶设置
 - 不运行 60 FPS 持续渲染循环
 
@@ -56,6 +57,14 @@ OHM Pet 会合并所有已发现目录中的兼容宠物。如果多个宠物使
 7. macOS 应用包内部的备用宠物
 
 Claude Code 当前没有官方内置的宠物包规范。OHM Pet 在 Claude 目录中查找的仍然是下方所述的 Codex v2 格式。使用 `actions.xml`、`behaviors.xml` 和独立 PNG 帧的 Shimeji 包暂未支持，后续需要单独增加格式适配器。
+
+## Agent 集成
+
+在状态栏或系统托盘中打开“Agent 集成”，即可安装或更新 Claude Code、Codex 和 Pi Agent 集成。OHM Pet 使用本地生命周期 Hook 和本机 UDP 事件，不抓取终端内容，也不轮询日志。
+
+Claude Code 和 Pi 可以提供执行中、等待、完成、失败和空闲状态。Codex 官方 `notify` 机制目前只提供 `agent-turn-complete`，因此 Codex 集成负责完成通知，并会保留用户原来的 notify 命令。
+
+安装位置、状态映射、自定义事件命令和移除规则见 [Agent 集成说明](docs/agent-integrations.zh-CN.md)。
 
 ## 宠物包格式
 

@@ -13,6 +13,7 @@ OHM Pet is a lightweight, WebView-free desktop companion written in Rust. It run
 - Low-frequency, context-aware idle behavior
 - Native tray menu and runtime pet switching
 - Automatic discovery of local, Codex, and Claude-compatible pet directories
+- One-click Claude Code, Codex, and Pi Agent lifecycle integration
 - Saved pet selection, window position, and topmost preference
 - No browser engine and no continuous 60 FPS render loop
 
@@ -55,6 +56,14 @@ OHM Pet merges all compatible packages it finds. If two packages use the same `i
 7. bundled fallback pets inside the macOS app
 
 Claude Code does not currently define a built-in pet package format. Claude pet directories discovered by OHM Pet accept the Codex v2 contract described below. Shimeji packages that use `actions.xml`, `behaviors.xml`, and separate PNG frames are not yet supported.
+
+## Agent integrations
+
+Open `Agent 集成` in the tray menu to install or update integrations for Claude Code, Codex, and Pi Agent. OHM Pet uses local lifecycle hooks and a localhost UDP signal instead of terminal scraping or log polling.
+
+Claude Code and Pi provide detailed working, waiting, completed, failed, and idle events. Codex currently exposes only `agent-turn-complete` through its official `notify` mechanism, so the Codex integration reports completion and preserves any previous notify command.
+
+See [Agent integrations](docs/agent-integrations.md) for installation paths, event mapping, custom signal commands, and removal behavior.
 
 ## Pet package contract
 
