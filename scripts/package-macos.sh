@@ -22,4 +22,6 @@ echo "$LITE_ZIP"
 if [[ -d "$ROOT/test-fixtures/external" ]]; then
   python3 "$ROOT/scripts/make-collection-archive.py" \
     "$LITE_ZIP" "$ROOT/test-fixtures/external" "$COLLECTION_ZIP"
+  python3 "$ROOT/scripts/collect-external-pets.py" \
+    "$ROOT/test-fixtures/external" "$ROOT/dist/pets"
 fi

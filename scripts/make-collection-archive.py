@@ -43,6 +43,17 @@ def main() -> int:
         copied = collector.collect(args.external_assets, pets)
         if copied == 0:
             raise RuntimeError("no external visual pet assets were collected")
+        included = [
+            "OHM-1「欧姆鸦」 (pets/ohm-raven)",
+            "茶兔 / 果殼 (pets/community/tea-rabbit)",
+            "女仆酱 / MaidChan (pets/community/maidchan)",
+            "KuroShimeji (pets/community/shimeji-ee)",
+            "UkagakaW Visual Pet (pets/community/ukagakaw)",
+        ]
+        (package_root / "COLLECTED-PETS.txt").write_text(
+            "OHM Pet Collection / 宠物合集\n\n" + "\n".join(f"- {item}" for item in included) + "\n",
+            encoding="utf-8",
+        )
         args.output_zip.parent.mkdir(parents=True, exist_ok=True)
         if args.output_zip.exists():
             args.output_zip.unlink()

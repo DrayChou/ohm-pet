@@ -253,56 +253,7 @@ impl DesktopPet {
     }
 
     fn create_pet_context_menu(&self) -> Result<Menu> {
-        let menu = Menu::new();
-        let catalog = PetCatalog::scan_many(&self.pet_roots)?;
-        let Some(pet) = catalog.find(&self.preferences.selected_pet_id) else {
-            return Ok(menu);
-        };
-        let selected = self
-            .preferences
-            .selected_costumes
-            .get(&pet.manifest.id)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        if pet.costumes.is_empty() {
-            menu.append(&MenuItem::new("此宠物没有可用换装", false, None))?;
-        } else {
-            menu.append(&MenuItem::with_id(
-                "costume:clear",
-                if selected.is_empty() {
-                    "✓ 默认装扮"
-                } else {
-                    "默认装扮"
-                },
-                true,
-                None,
-            ))?;
-            for costume in &pet.costumes {
-                menu.append(&MenuItem::with_id(
-                    format!("costume:{}", costume.id),
-                    format!(
-                        "{}{}：{}",
-                        if selected.contains(&costume.id) {
-                            "✓ "
-                        } else {
-                            ""
-                        },
-                        costume.category,
-                        costume.name
-                    ),
-                    true,
-                    None,
-                ))?;
-            }
-        }
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&MenuItem::with_id(
-            "state:roam",
-            "沿前台窗口走一走",
-            true,
-            None,
-        ))?;
-        Ok(menu)
+        self.create_command_menu()
     }
 
     fn show_pet_context_menu(&self) {
@@ -325,7 +276,7 @@ impl DesktopPet {
         }
     }
 
-    fn create_tray(&mut self) -> Result<TrayIcon> {
+    fn create_command_menu(&self) -> Result<Menu> {
         let catalog = PetCatalog::scan_many(&self.pet_roots)?;
         let menu = Menu::new();
         let pets_menu = Submenu::new("切换宠物", true);
@@ -459,20 +410,59 @@ impl DesktopPet {
         menu.append(&MenuItem::with_id("show", "显示宠物", true, None))?;
         menu.append(&MenuItem::with_id("hide", "隐藏宠物", true, None))?;
         menu.append(&MenuItem::with_id("quit", "退出 OHM Pet", true, None))?;
+        Ok(menu)
+    }
 
+    fn create_tray_icon(&self) -> Result<Icon> {
         let icon_rgba = self
             .atlas
             .as_ref()
             .ok_or_else(|| anyhow!("atlas unavailable"))?
             .frame_rgba(0, 0);
-        let icon = Icon::from_rgba(icon_rgba, CELL_WIDTH, CELL_HEIGHT)
-            .map_err(|error| anyhow!("create tray icon: {error}"))?;
+        Icon::from_rgba(icon_rgba, CELL_WIDTH, CELL_HEIGHT)
+            .map_err(|error| anyhow!("create tray icon: {error}"))
+    }
+
+    fn create_tray(&self) -> Result<TrayIcon> {
         TrayIconBuilder::new()
+            .with_tooltip("OHM Pet")
+            .with_icon(self.create_tray_icon()?)
+            .with_menu(Box::new(self.create_command_menu()?))
+            .build()
+            .map_err(|error| anyhow!("create tray: {error}"))
+    }
+
+    fn refresh_tray(&mut self) {
+        let menu = match self.create_command_menu() {
+            Ok(menu) => menu,
+            Err(error) => {
+                eprintln!("failed to refresh tray menu: {error:#}");
+                return;
+            }
+        };
+        let icon = match self.create_tray_icon() {
+            Ok(icon) => icon,
+            Err(error) => {
+                eprintln!("failed to refresh tray icon: {error:#}");
+                return;
+            }
+        };
+        if let Some(tray) = self.tray.as_mut() {
+            tray.set_menu(Some(Box::new(menu)));
+            if let Err(error) = tray.set_icon(Some(icon)) {
+                eprintln!("failed to update tray icon: {error}");
+            }
+            return;
+        }
+        match TrayIconBuilder::new()
             .with_tooltip("OHM Pet")
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .build()
-            .map_err(|error| anyhow!("create tray: {error}"))
+        {
+            Ok(tray) => self.tray = Some(tray),
+            Err(error) => eprintln!("failed to recreate tray: {error}"),
+        }
     }
 
     fn switch_pet(&mut self, id: &str) {
@@ -503,10 +493,7 @@ impl DesktopPet {
         if let Some(store) = &self.preferences_store {
             let _ = store.save(&self.preferences);
         }
-        match self.create_tray() {
-            Ok(tray) => self.tray = Some(tray),
-            Err(error) => eprintln!("failed to refresh tray after pet switch: {error:#}"),
-        }
+        self.refresh_tray();
     }
 
     fn toggle_costume(&mut self, costume_id: Option<&str>) {
@@ -562,7 +549,7 @@ impl DesktopPet {
         if let Some(store) = &self.preferences_store {
             let _ = store.save(&self.preferences);
         }
-        self.tray = self.create_tray().ok();
+        self.refresh_tray();
     }
 
     fn apply_agent_signal(&mut self, signal: AgentSignal) {
@@ -608,7 +595,7 @@ impl DesktopPet {
                 Some(Duration::from_millis(4200)),
             );
         }
-        self.tray = self.create_tray().ok();
+        self.refresh_tray();
     }
 
     fn handle_menu_events(&mut self, event_loop: &ActiveEventLoop) {
@@ -628,7 +615,7 @@ impl DesktopPet {
                 "quit" => event_loop.exit(),
                 "pets:refresh" => {
                     self.pet_roots = discover_pet_roots();
-                    self.tray = self.create_tray().ok();
+                    self.refresh_tray();
                 }
                 "integration:claude:install" => {
                     self.run_integration_action(|manager| manager.install(AgentKind::Claude));
@@ -663,7 +650,7 @@ impl DesktopPet {
                     if let Some(store) = &self.preferences_store {
                         let _ = store.save(&self.preferences);
                     }
-                    self.tray = self.create_tray().ok();
+                    self.refresh_tray();
                 }
                 "state:waving" => self.state.set_state(
                     AnimationState::Waving,
