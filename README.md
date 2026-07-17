@@ -101,11 +101,14 @@ python3 scripts/generate-icons.py
 ## Build macOS
 
 ```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ./scripts/package-macos.sh
 open "dist/OHM Pet.app"
 ```
 
-The script creates an ad-hoc signed application and two local archives when `test-fixtures/external/` is available:
+The script creates a Universal 2 application for Apple Silicon and Intel Macs with a minimum system version of macOS 11. It is ad-hoc signed; public downloads are not notarized until Apple Developer ID credentials are configured. If Gatekeeper blocks a trusted download, right-click the app and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**.
+
+Two local archives are created when `test-fixtures/external/` is available:
 
 - `dist/macos/OHM-Pet-macos-lite.zip`, containing only OHM Raven
 - `dist/macos/OHM-Pet-macos-collection.zip`, containing OHM Raven and sanitized local test pets

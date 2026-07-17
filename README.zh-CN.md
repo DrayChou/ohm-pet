@@ -102,11 +102,14 @@ python3 scripts/generate-icons.py
 ## 构建 macOS 版本
 
 ```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ./scripts/package-macos.sh
 open "dist/OHM Pet.app"
 ```
 
-当本机存在 `test-fixtures/external/` 时，脚本会生成临时签名的 macOS 应用和两个压缩包：
+脚本会生成同时支持 Apple Silicon 和 Intel Mac 的 Universal 2 应用，最低支持 macOS 11。应用目前使用临时签名；在配置 Apple Developer ID 凭据前，公开下载包尚未完成 Apple 公证。如果 Gatekeeper 阻止可信下载，请右键应用选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。
+
+当本机存在 `test-fixtures/external/` 时，脚本还会生成两个压缩包：
 
 - `dist/macos/OHM-Pet-macos-lite.zip`，只包含欧姆鸦
 - `dist/macos/OHM-Pet-macos-collection.zip`，包含欧姆鸦和经过安全筛选的本地测试宠物

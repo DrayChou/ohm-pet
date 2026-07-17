@@ -27,7 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build and package macOS
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build and package macOS Universal 2
         run: ./scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:
