@@ -3,14 +3,29 @@
 use anyhow::{anyhow, Context, Result};
 use directories::BaseDirs;
 mod agent_ipc;
+mod channel_runtime;
+mod channel_settings;
+mod channels;
 mod integrations;
+mod lark_runtime;
+mod notifier;
+mod task_tracker;
 
 use agent_ipc::{AgentEvent, AgentSignal, UserEvent};
+use channel_runtime::spawn_channel_runtime;
+use channel_settings::{configure_lark, configure_proxy, configure_telegram};
+use channels::{ChannelCommand, ChannelConfigStore};
 use integrations::{AgentKind, IntegrationManager};
+use lark_runtime::spawn_lark_runtime;
+use notifier::{
+    notify_task, send_channel_reply, show_channel_notice, test_channel, ChannelKind,
+    TaskNotification,
+};
 use ohm_pet_core::{
     direction_from_vector, AnimationState, Atlas, BehaviorBrain, BehaviorContext, PetCatalog,
     Preferences, PreferencesStore, StateMachine, CELL_HEIGHT, CELL_WIDTH,
 };
+use task_tracker::TaskTracker;
 #[cfg(target_os = "macos")]
 mod macos_renderer;
 
@@ -27,6 +42,7 @@ use rand::Rng;
 #[cfg(debug_assertions)]
 use std::path::Path;
 use std::{
+    io::Read,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -45,6 +61,9 @@ use winit::{
     raw_window_handle::{HasWindowHandle, RawWindowHandle},
     window::{Window, WindowId, WindowLevel},
 };
+
+const ACTIVITY_WIDTH: u32 = 340;
+const PET_WINDOW_WIDTH: u32 = ACTIVITY_WIDTH + CELL_WIDTH;
 
 struct RoamPlan {
     start_x: i32,
@@ -72,6 +91,7 @@ struct DesktopPet {
     pointer_nearby: bool,
     roam: Option<RoamPlan>,
     next_roam_at: Instant,
+    tasks: TaskTracker,
 }
 
 impl DesktopPet {
@@ -99,6 +119,7 @@ impl DesktopPet {
             pointer_nearby: false,
             roam: None,
             next_roam_at: now + Duration::from_secs(18),
+            tasks: TaskTracker::default(),
         }
     }
 
@@ -130,6 +151,8 @@ impl DesktopPet {
             return;
         };
         let coordinates = self.state.coordinates();
+        let task_lines = self.tasks.display_lines(Instant::now(), 5);
+        renderer.set_activity(&task_lines);
         if let Err(error) = renderer.render(atlas, coordinates.row, coordinates.column) {
             eprintln!("render error: {error:#}");
         }
@@ -139,7 +162,7 @@ impl DesktopPet {
         if now < self.next_pointer_sample_at {
             return false;
         }
-        self.next_pointer_sample_at = now + Duration::from_millis(100);
+        self.next_pointer_sample_at = now + Duration::from_millis(160);
         let Some(renderer) = &self.renderer else {
             return false;
         };
@@ -385,6 +408,76 @@ impl DesktopPet {
             None,
         ))?;
         menu.append(&integrations_menu)?;
+        let channel_config = ChannelConfigStore::system()
+            .map(|store| store.load())
+            .unwrap_or_default();
+        let channels_menu = Submenu::new("通讯渠道设置", true);
+        channels_menu.append(&MenuItem::with_id(
+            "channels:proxy",
+            if channel_config.proxy_url.trim().is_empty() {
+                "设置网络代理"
+            } else {
+                "✓ 网络代理已配置"
+            },
+            true,
+            None,
+        ))?;
+        channels_menu.append(&PredefinedMenuItem::separator())?;
+        channels_menu.append(&MenuItem::with_id(
+            "channels:telegram",
+            if channel_config.telegram.ready() {
+                "✓ Telegram Bot"
+            } else {
+                "设置 Telegram Bot"
+            },
+            true,
+            None,
+        ))?;
+        channels_menu.append(&MenuItem::with_id(
+            "channels:test-telegram",
+            "发送 Telegram 测试消息",
+            channel_config.telegram.ready(),
+            None,
+        ))?;
+        channels_menu.append(&PredefinedMenuItem::separator())?;
+        channels_menu.append(&MenuItem::with_id(
+            "channels:lark",
+            if channel_config.lark.ready() {
+                "✓ 飞书 / Lark Bot（实验性·未实测）"
+            } else {
+                "设置飞书 / Lark Bot（实验性·未实测）"
+            },
+            true,
+            None,
+        ))?;
+        channels_menu.append(&MenuItem::with_id(
+            "channels:test-lark",
+            "发送飞书 / Lark 测试消息（未实测）",
+            channel_config.lark.ready(),
+            None,
+        ))?;
+        if let Some(store) = ChannelConfigStore::system() {
+            channels_menu.append(&MenuItem::with_id(
+                "channels:show-path",
+                format!("配置文件：{}", store.path().display()),
+                false,
+                None,
+            ))?;
+        }
+        menu.append(&channels_menu)?;
+        let task_lines = self.tasks.display_lines(Instant::now(), 5);
+        if !task_lines.is_empty() {
+            let tasks_menu = Submenu::new(format!("活跃任务（{}）", task_lines.len()), true);
+            for (index, line) in task_lines.into_iter().enumerate() {
+                tasks_menu.append(&MenuItem::with_id(
+                    format!("task:status:{index}"),
+                    line,
+                    false,
+                    None,
+                ))?;
+            }
+            menu.append(&tasks_menu)?;
+        }
         menu.append(&MenuItem::with_id("state:waving", "打个招呼", true, None))?;
         menu.append(&MenuItem::with_id("state:jumping", "跳一下", true, None))?;
         menu.append(&MenuItem::with_id("state:waiting", "等待", true, None))?;
@@ -552,23 +645,74 @@ impl DesktopPet {
         self.refresh_tray();
     }
 
+    fn handle_channel_command(&self, command: ChannelCommand) {
+        let command_name = command
+            .text
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .split('@')
+            .next()
+            .unwrap_or_default();
+        let now = Instant::now();
+        let response = match command_name {
+            "/tasks" => {
+                let lines = self.tasks.display_lines(now, 20);
+                if lines.is_empty() {
+                    "OHM Pet: no active tasks.".to_owned()
+                } else {
+                    format!("OHM Pet active tasks:\n{}", lines.join("\n"))
+                }
+            }
+            "/status" => {
+                let state = match self.tasks.animation_state() {
+                    AnimationState::Waiting => "waiting for input",
+                    AnimationState::Running => "working",
+                    AnimationState::Failed => "failed",
+                    AnimationState::Review => "ready",
+                    _ => "idle",
+                };
+                let lines = self.tasks.display_lines(now, 5);
+                if lines.is_empty() {
+                    format!("OHM Pet status: {state}.")
+                } else {
+                    format!("OHM Pet status: {state}.\n{}", lines.join("\n"))
+                }
+            }
+            "/help" | "/start" => [
+                "OHM Pet remote commands:",
+                "/status - current aggregate status",
+                "/tasks - active task list",
+                "/help - command help",
+                "",
+                "Task mutation commands are not enabled yet.",
+            ]
+            .join("\n"),
+            _ => "Unknown command. Use /help.".to_owned(),
+        };
+        send_channel_reply(&command, response);
+    }
+
     fn apply_agent_signal(&mut self, signal: AgentSignal) {
         self.roam = None;
         let now = Instant::now();
-        match signal.event {
-            AgentEvent::Working => self.state.set_state(AnimationState::Running, now, None),
-            AgentEvent::Waiting => self.state.set_state(AnimationState::Waiting, now, None),
-            AgentEvent::Completed => self.state.set_state(
-                AnimationState::Review,
-                now,
-                Some(Duration::from_millis(4200)),
-            ),
-            AgentEvent::Failed => self.state.set_state(
-                AnimationState::Failed,
-                now,
-                Some(Duration::from_millis(5200)),
-            ),
-            AgentEvent::Idle => self.state.set_state(AnimationState::Idle, now, None),
+        let previous_state = self.tasks.animation_state();
+        let update = self.tasks.apply(&signal, now);
+        let aggregate = self.tasks.animation_state();
+        if aggregate != previous_state {
+            self.state.set_state(aggregate, now, None);
+        }
+        if let Some(task) = update.finished {
+            let elapsed = task.elapsed(now);
+            notify_task(TaskNotification {
+                source: task.source,
+                title: task.title,
+                event: task.event,
+                elapsed,
+            });
+        }
+        if update.changed {
+            self.refresh_tray();
         }
         if let Some(window) = &self.window {
             window.set_visible(true);
@@ -633,10 +777,58 @@ impl DesktopPet {
                         manager.remove(AgentKind::Pi)
                     });
                 }
+                "channels:proxy" => {
+                    match configure_proxy() {
+                        Ok(true) => show_channel_notice(
+                            "Network proxy settings saved",
+                            "Telegram and API requests will use the new proxy automatically.",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            show_channel_notice("Network proxy settings failed", &error.to_string())
+                        }
+                    }
+                    self.refresh_tray();
+                }
+                "channels:telegram" => {
+                    match configure_telegram() {
+                        Ok(true) => show_channel_notice(
+                            "Telegram settings saved",
+                            "The new channel configuration will be applied automatically.",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("Telegram settings error: {error:#}");
+                            show_channel_notice("Telegram settings failed", &error.to_string());
+                        }
+                    }
+                    self.refresh_tray();
+                }
+                "channels:test-telegram" => test_channel(ChannelKind::Telegram),
+                "channels:lark" => {
+                    match configure_lark() {
+                        Ok(true) => show_channel_notice(
+                            "Feishu / Lark settings saved",
+                            "The new channel configuration will be applied automatically.",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("Lark settings error: {error:#}");
+                            show_channel_notice(
+                                "Feishu / Lark settings failed",
+                                &error.to_string(),
+                            );
+                        }
+                    }
+                    self.refresh_tray();
+                }
+                "channels:test-lark" => test_channel(ChannelKind::Lark),
                 "integration:test" => self.apply_agent_signal(AgentSignal {
                     source: "tray".into(),
                     event: AgentEvent::Completed,
                     title: Some("Integration test".into()),
+                    session_id: Some("tray".into()),
+                    task_id: Some("test".into()),
                 }),
                 "topmost:toggle" => {
                     self.preferences.always_on_top = !self.preferences.always_on_top;
@@ -709,7 +901,7 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
         let attributes = Window::default_attributes()
             .with_title("OHM Pet")
             .with_inner_size(LogicalSize::new(
-                CELL_WIDTH as f64 * scale,
+                PET_WINDOW_WIDTH as f64 * scale,
                 CELL_HEIGHT as f64 * scale,
             ))
             .with_resizable(false)
@@ -777,6 +969,7 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::AgentSignal(signal) => self.apply_agent_signal(signal),
+            UserEvent::ChannelCommand(command) => self.handle_channel_command(command),
         }
     }
 
@@ -865,6 +1058,12 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
         let mut redraw = self.update_pointer_gaze(now);
         redraw |= self.update_roaming(now);
         redraw |= self.state.tick(now);
+        if self.tasks.prune(now) {
+            self.state
+                .set_state(self.tasks.animation_state(), now, None);
+            self.refresh_tray();
+            redraw = true;
+        }
         if self.preferences.autonomous
             && now >= self.next_autonomous_at
             && self.state.state() == AnimationState::Idle
@@ -891,11 +1090,12 @@ impl ApplicationHandler<UserEvent> for DesktopPet {
                 window.request_redraw();
             }
         }
-        let animation_deadline = if self.preferences.autonomous {
-            self.state.next_deadline().min(self.next_autonomous_at)
-        } else {
-            self.state.next_deadline()
-        };
+        let animation_deadline =
+            if self.preferences.autonomous && self.state.state() == AnimationState::Idle {
+                self.state.next_deadline().min(self.next_autonomous_at)
+            } else {
+                self.state.next_deadline()
+            };
         let roam_deadline = self.roam.as_ref().map_or_else(
             || {
                 if self.preferences.autonomous
@@ -1035,6 +1235,7 @@ fn discover_pet_roots() -> Vec<PathBuf> {
 struct SignalCommand {
     signal: AgentSignal,
     codex_payload: Option<String>,
+    payload_stdin: bool,
 }
 
 fn parse_signal_command(
@@ -1047,12 +1248,18 @@ fn parse_signal_command(
     let mut source = None;
     let mut event = None;
     let mut title = None;
+    let mut session_id = None;
+    let mut task_id = None;
     let mut codex_payload = None;
+    let mut payload_stdin = false;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--source" => source = arguments.next(),
             "--event" => event = arguments.next(),
             "--title" => title = arguments.next(),
+            "--session-id" => session_id = arguments.next(),
+            "--task-id" => task_id = arguments.next(),
+            "--payload-stdin" => payload_stdin = true,
             "--integration" => {
                 let _ = arguments.next();
             }
@@ -1069,13 +1276,62 @@ fn parse_signal_command(
             source,
             event,
             title,
+            session_id,
+            task_id,
         },
         codex_payload,
+        payload_stdin,
     }))
 }
 
+fn enrich_signal_from_payload(signal: &mut AgentSignal, payload: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return;
+    };
+    let string = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+    };
+    if signal.session_id.is_none() {
+        signal.session_id = string(&["session_id", "sessionId", "thread-id", "thread_id"]);
+    }
+    if signal.task_id.is_none() {
+        signal.task_id = string(&["task_id", "taskId", "turn-id", "turn_id"]);
+    }
+    if signal.title.is_none() {
+        signal.title = string(&["prompt", "title"]);
+        if signal.title.is_none() {
+            signal.title = value
+                .get("input-messages")
+                .or_else(|| value.get("input_messages"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|messages| messages.first())
+                .and_then(|message| {
+                    message
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| message.get("content")?.as_str().map(str::to_owned))
+                });
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    if let Some(command) = parse_signal_command(std::env::args().skip(1))? {
+    if let Some(mut command) = parse_signal_command(std::env::args().skip(1))? {
+        let stdin_payload = if command.payload_stdin {
+            let mut payload = String::new();
+            std::io::stdin().read_to_string(&mut payload)?;
+            (!payload.trim().is_empty()).then_some(payload)
+        } else {
+            None
+        };
+        if let Some(payload) = stdin_payload
+            .as_deref()
+            .or(command.codex_payload.as_deref())
+        {
+            enrich_signal_from_payload(&mut command.signal, payload);
+        }
         agent_ipc::send_signal(&command.signal)?;
         if command.signal.source == "codex" {
             if let Some(payload) = command.codex_payload {
@@ -1085,11 +1341,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(target_os = "macos")]
+    if let Err(error) = notify_rust::set_application("works.earendil.ohm-pet") {
+        eprintln!("Native notification application setup failed: {error}");
+    }
+
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(error) = agent_ipc::spawn_signal_listener(event_loop.create_proxy()) {
         eprintln!("Agent event listener unavailable: {error:#}");
     }
+    spawn_channel_runtime(event_loop.create_proxy());
+    spawn_lark_runtime(event_loop.create_proxy());
     let mut app = DesktopPet::new(discover_pet_roots());
     event_loop.run_app(&mut app)?;
     Ok(())

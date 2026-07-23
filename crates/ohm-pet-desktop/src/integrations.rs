@@ -157,7 +157,7 @@ impl IntegrationManager {
                 "command": self.executable,
                 "args": [
                     "signal", "--source", "claude", "--event", state,
-                    "--integration", INTEGRATION_ID
+                    "--payload-stdin", "--integration", INTEGRATION_ID
                 ],
                 "async": true,
                 "timeout": 5
@@ -393,20 +393,40 @@ import type {{ ExtensionAPI }} from "@earendil-works/pi-coding-agent";
 const ADDRESS = "127.0.0.1";
 const PORT = {port};
 
-function signal(event: "working" | "waiting" | "completed" | "failed" | "idle") {{
+let sessionId = "pi-unknown";
+let currentTitle: string | undefined;
+
+function signal(event: "working" | "waiting" | "completed" | "failed" | "idle", title?: string) {{
   const socket = dgram.createSocket("udp4");
-  const payload = Buffer.from(JSON.stringify({{ source: "pi", event }}));
+  const payload = Buffer.from(JSON.stringify({{
+    source: "pi",
+    event,
+    sessionId,
+    taskId: "current",
+    title,
+  }}));
   socket.send(payload, PORT, ADDRESS, () => socket.close());
 }}
 
+function taskTitle(prompt: string): string {{
+  const firstLine = prompt.split(/\r?\n/, 1)[0]?.trim().replace(/\s+/g, " ") || "Pi task";
+  return Array.from(firstLine).slice(0, 64).join("");
+}}
+
 export default function (pi: ExtensionAPI) {{
-  pi.on("agent_start", () => signal("working"));
-  pi.on("tool_execution_start", () => signal("working"));
-  pi.on("tool_execution_end", (event) => {{
-    if (event.isError) signal("failed");
+  pi.on("session_start", (_event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
   }});
-  pi.on("agent_settled", () => signal("completed"));
-  pi.on("session_shutdown", () => signal("idle"));
+  pi.on("before_agent_start", (event) => {{
+    currentTitle = taskTitle(event.prompt);
+    signal("working", currentTitle);
+  }});
+  pi.on("tool_execution_start", () => signal("working", currentTitle));
+  pi.on("tool_execution_end", (event) => {{
+    if (event.isError) signal("failed", currentTitle);
+  }});
+  pi.on("agent_settled", () => signal("completed", currentTitle));
+  pi.on("session_shutdown", () => signal("idle", currentTitle));
 }}
 "#
     )

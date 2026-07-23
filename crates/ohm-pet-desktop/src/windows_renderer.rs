@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use ohm_pet_core::{Atlas, CELL_HEIGHT, CELL_WIDTH};
-use std::{ffi::c_void, mem::size_of, ptr::copy_nonoverlapping};
+use std::{collections::HashMap, ffi::c_void, mem::size_of, ptr::copy_nonoverlapping};
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT, SIZE},
     Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-        SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        BLENDFUNCTION, DIB_RGB_COLORS, HGDIOBJ,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, DrawTextW, GetDC, ReleaseDC,
+        SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT,
+        DT_NOPREFIX, DT_WORDBREAK, HGDIOBJ, TRANSPARENT,
     },
     UI::WindowsAndMessaging::{
         GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsIconic,
@@ -23,6 +24,8 @@ pub struct NativeRenderer {
     hwnd: HWND,
     width: u32,
     height: u32,
+    activity_lines: Vec<String>,
+    pet_frames: HashMap<(u32, u32), Vec<u8>>,
 }
 
 impl NativeRenderer {
@@ -48,6 +51,8 @@ impl NativeRenderer {
             hwnd,
             width: size.width.max(1),
             height: size.height.max(1),
+            activity_lines: Vec::new(),
+            pet_frames: HashMap::new(),
         };
         renderer.render(atlas, row, column)?;
         Ok(renderer)
@@ -79,7 +84,8 @@ impl NativeRenderer {
             let _ = GetCursorPos(&mut cursor);
             let _ = GetWindowRect(self.hwnd, &mut rect);
         }
-        let center_x = (f64::from(rect.left) + f64::from(rect.right)) / 2.0;
+        let pet_width = f64::from(self.height) * f64::from(CELL_WIDTH) / f64::from(CELL_HEIGHT);
+        let center_x = f64::from(rect.right) - pet_width / 2.0;
         let center_y = (f64::from(rect.top) + f64::from(rect.bottom)) / 2.0;
         (
             f64::from(cursor.x) - center_x,
@@ -87,23 +93,57 @@ impl NativeRenderer {
         )
     }
 
+    pub fn set_activity(&mut self, lines: &[String]) {
+        if self.activity_lines != lines {
+            self.activity_lines = lines.to_vec();
+        }
+    }
+
     pub fn render(&mut self, atlas: &Atlas, row: u32, column: u32) -> Result<()> {
-        let source =
-            image::RgbaImage::from_raw(CELL_WIDTH, CELL_HEIGHT, atlas.frame_rgba(row, column))
-                .ok_or_else(|| anyhow!("invalid atlas frame"))?;
-        let scaled = image::imageops::resize(
-            &source,
-            self.width,
-            self.height,
-            image::imageops::FilterType::Nearest,
-        );
-        let mut bgra = Vec::with_capacity((self.width * self.height * 4) as usize);
-        for pixel in scaled.pixels() {
-            let alpha = u16::from(pixel[3]);
-            bgra.push(((u16::from(pixel[2]) * alpha) / 255) as u8);
-            bgra.push(((u16::from(pixel[1]) * alpha) / 255) as u8);
-            bgra.push(((u16::from(pixel[0]) * alpha) / 255) as u8);
-            bgra.push(pixel[3]);
+        let pet_width = ((self.height as f64 * f64::from(CELL_WIDTH) / f64::from(CELL_HEIGHT))
+            .round() as u32)
+            .min(self.width);
+        let bubble_width = self.width - pet_width;
+        let pet_frame = if let Some(frame) = self.pet_frames.get(&(row, column)) {
+            frame
+        } else {
+            let source =
+                image::RgbaImage::from_raw(CELL_WIDTH, CELL_HEIGHT, atlas.frame_rgba(row, column))
+                    .ok_or_else(|| anyhow!("invalid atlas frame"))?;
+            let scaled = image::imageops::resize(
+                &source,
+                pet_width,
+                self.height,
+                image::imageops::FilterType::Nearest,
+            );
+            let mut frame = Vec::with_capacity((pet_width * self.height * 4) as usize);
+            for pixel in scaled.pixels() {
+                let alpha = u16::from(pixel[3]);
+                frame.push(((u16::from(pixel[2]) * alpha) / 255) as u8);
+                frame.push(((u16::from(pixel[1]) * alpha) / 255) as u8);
+                frame.push(((u16::from(pixel[0]) * alpha) / 255) as u8);
+                frame.push(pixel[3]);
+            }
+            self.pet_frames.insert((row, column), frame);
+            self.pet_frames.get(&(row, column)).expect("inserted frame")
+        };
+        let mut bgra = vec![0_u8; (self.width * self.height * 4) as usize];
+        if !self.activity_lines.is_empty() && bubble_width > 16 {
+            for y in 12..self.height.saturating_sub(12) {
+                for x in 6..bubble_width.saturating_sub(6) {
+                    let offset = ((y * self.width + x) * 4) as usize;
+                    bgra[offset] = 20;
+                    bgra[offset + 1] = 20;
+                    bgra[offset + 2] = 20;
+                    bgra[offset + 3] = 224;
+                }
+            }
+        }
+        for y in 0..self.height {
+            let source_start = (y * pet_width * 4) as usize;
+            let destination_start = ((y * self.width + bubble_width) * 4) as usize;
+            bgra[destination_start..destination_start + (pet_width * 4) as usize]
+                .copy_from_slice(&pet_frame[source_start..source_start + (pet_width * 4) as usize]);
         }
 
         unsafe {
@@ -143,6 +183,29 @@ impl NativeRenderer {
             }
             copy_nonoverlapping(bgra.as_ptr(), bits.cast::<u8>(), bgra.len());
             let previous = SelectObject(memory_dc, HGDIOBJ(bitmap.0));
+            if !self.activity_lines.is_empty() && bubble_width > 16 {
+                let mut text: Vec<u16> = self.activity_lines.join("\r\n").encode_utf16().collect();
+                let mut text_rect = RECT {
+                    left: 16,
+                    top: 22,
+                    right: bubble_width as i32 - 14,
+                    bottom: self.height as i32 - 18,
+                };
+                let _ = SetBkMode(memory_dc, TRANSPARENT);
+                let _ = SetTextColor(memory_dc, COLORREF(0x00FF_FFFF));
+                DrawTextW(
+                    memory_dc,
+                    &mut text,
+                    &mut text_rect,
+                    DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX,
+                );
+                for y in 12..self.height.saturating_sub(12) {
+                    for x in 6..bubble_width.saturating_sub(6) {
+                        let offset = ((y * self.width + x) * 4 + 3) as usize;
+                        *bits.cast::<u8>().add(offset) = 224;
+                    }
+                }
+            }
 
             let mut rect = RECT::default();
             GetWindowRect(self.hwnd, &mut rect)?;

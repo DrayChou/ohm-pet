@@ -1,3 +1,4 @@
+use crate::channels::ChannelCommand;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{net::UdpSocket, str::FromStr, thread, time::Duration};
@@ -37,11 +38,27 @@ pub struct AgentSignal {
     pub event: AgentEvent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "sessionId")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "taskId")]
+    pub task_id: Option<String>,
+}
+
+impl AgentSignal {
+    pub fn task_key(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.source,
+            self.session_id.as_deref().unwrap_or("default"),
+            self.task_id.as_deref().unwrap_or("current")
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum UserEvent {
     AgentSignal(AgentSignal),
+    ChannelCommand(ChannelCommand),
 }
 
 pub fn send_signal(signal: &AgentSignal) -> Result<()> {
@@ -109,6 +126,8 @@ mod tests {
             source: "pi".into(),
             event: AgentEvent::Completed,
             title: Some("Task complete".into()),
+            session_id: Some("session-1".into()),
+            task_id: Some("turn-1".into()),
         };
         let encoded = serde_json::to_vec(&signal).unwrap();
         assert_eq!(

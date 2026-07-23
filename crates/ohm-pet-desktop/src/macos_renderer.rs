@@ -14,8 +14,10 @@ use core_graphics::{
     },
 };
 use objc2::{rc::Retained, AnyThread, MainThreadMarker};
-use objc2_app_kit::{NSImage, NSImageScaling, NSImageView, NSView, NSWindow};
-use objc2_foundation::NSData;
+use objc2_app_kit::{
+    NSColor, NSFont, NSImage, NSImageScaling, NSImageView, NSTextField, NSView, NSWindow,
+};
+use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString};
 use ohm_pet_core::Atlas;
 use std::collections::HashMap;
 use winit::{
@@ -25,6 +27,8 @@ use winit::{
 
 pub struct NativeRenderer {
     image_view: Retained<NSImageView>,
+    activity_label: Retained<NSTextField>,
+    activity_lines: Vec<String>,
     window: Retained<NSWindow>,
     images: HashMap<(u32, u32), Retained<NSImage>>,
 }
@@ -32,6 +36,7 @@ pub struct NativeRenderer {
 impl Drop for NativeRenderer {
     fn drop(&mut self) {
         self.image_view.removeFromSuperview();
+        self.activity_label.removeFromSuperview();
     }
 }
 
@@ -48,8 +53,30 @@ impl NativeRenderer {
             return Err(anyhow!("expected an AppKit window handle"));
         };
         let content_view = unsafe { &*(handle.ns_view.as_ptr().cast::<NSView>()) };
-        image_view.setFrame(content_view.bounds());
+        let bounds = content_view.bounds();
+        let pet_width = bounds.size.height * (192.0 / 208.0);
+        image_view.setFrame(NSRect::new(
+            NSPoint::new(bounds.size.width - pet_width, 0.0),
+            NSSize::new(pet_width, bounds.size.height),
+        ));
         content_view.addSubview(&image_view);
+
+        let activity_label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        activity_label.setFrame(NSRect::new(
+            NSPoint::new(8.0, 18.0),
+            NSSize::new(
+                (bounds.size.width - pet_width - 16.0).max(1.0),
+                (bounds.size.height - 36.0).max(1.0),
+            ),
+        ));
+        activity_label.setMaximumNumberOfLines(6);
+        activity_label.setBordered(false);
+        activity_label.setDrawsBackground(true);
+        activity_label.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.08, 0.88)));
+        activity_label.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.96)));
+        activity_label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+        activity_label.setHidden(true);
+        content_view.addSubview(&activity_label);
         let native_window = content_view
             .window()
             .ok_or_else(|| anyhow!("AppKit content view is not attached to a window"))?;
@@ -57,6 +84,8 @@ impl NativeRenderer {
         images.insert((row, column), image);
         Ok(Self {
             image_view,
+            activity_label,
+            activity_lines: Vec::new(),
             window: native_window,
             images,
         })
@@ -124,11 +153,21 @@ impl NativeRenderer {
 
     pub fn pointer_vector(&self) -> (f64, f64) {
         let point = self.window.mouseLocationOutsideOfEventStream();
-        let bounds = self.image_view.bounds();
+        let frame = self.image_view.frame();
         (
-            point.x - bounds.size.width / 2.0,
-            bounds.size.height / 2.0 - point.y,
+            point.x - (frame.origin.x + frame.size.width / 2.0),
+            frame.origin.y + frame.size.height / 2.0 - point.y,
         )
+    }
+
+    pub fn set_activity(&mut self, lines: &[String]) {
+        if self.activity_lines == lines {
+            return;
+        }
+        self.activity_lines = lines.to_vec();
+        self.activity_label
+            .setStringValue(&NSString::from_str(&lines.join("\n")));
+        self.activity_label.setHidden(lines.is_empty());
     }
 
     pub fn render(&mut self, atlas: &Atlas, row: u32, column: u32) -> Result<()> {
