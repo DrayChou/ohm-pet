@@ -396,37 +396,73 @@ const PORT = {port};
 let sessionId = "pi-unknown";
 let currentTitle: string | undefined;
 
-function signal(event: "working" | "waiting" | "completed" | "failed" | "idle", title?: string) {{
+function signal(
+  event: "working" | "waiting" | "completed" | "failed" | "idle",
+  title?: string,
+  taskId = "current",
+) {{
   const socket = dgram.createSocket("udp4");
   const payload = Buffer.from(JSON.stringify({{
     source: "pi",
     event,
     sessionId,
-    taskId: "current",
+    taskId,
     title,
   }}));
   socket.send(payload, PORT, ADDRESS, () => socket.close());
 }}
 
-function taskTitle(prompt: string): string {{
-  const firstLine = prompt.split(/\r?\n/, 1)[0]?.trim().replace(/\s+/g, " ") || "Pi task";
+function shortTitle(value: string, fallback: string): string {{
+  const firstLine = value.split(/\r?\n/, 1)[0]?.trim().replace(/\s+/g, " ") || fallback;
   return Array.from(firstLine).slice(0, 64).join("");
+}}
+
+function taskTitle(prompt: string): string {{
+  return shortTitle(prompt, "Pi task");
+}}
+
+function toolTitle(toolName: string, args: unknown): string {{
+  if (args && typeof args === "object") {{
+    const values = args as Record<string, unknown>;
+    for (const key of ["subject", "description", "command", "path", "query", "pattern"]) {{
+      const value = values[key];
+      if (typeof value === "string" && value.trim()) {{
+        return shortTitle(`${{toolName}}: ${{value}}`, toolName);
+      }}
+    }}
+  }}
+  return shortTitle(toolName, "Pi tool");
 }}
 
 export default function (pi: ExtensionAPI) {{
   pi.on("session_start", (_event, ctx) => {{
     sessionId = ctx.sessionManager.getSessionId();
   }});
-  pi.on("before_agent_start", (event) => {{
+  pi.on("before_agent_start", (event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
     currentTitle = taskTitle(event.prompt);
     signal("working", currentTitle);
   }});
-  pi.on("tool_execution_start", () => signal("working", currentTitle));
-  pi.on("tool_execution_end", (event) => {{
-    if (event.isError) signal("failed", currentTitle);
+  pi.on("tool_execution_start", (event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
+    signal("working", toolTitle(event.toolName, event.args), event.toolCallId);
   }});
-  pi.on("agent_settled", () => signal("completed", currentTitle));
-  pi.on("session_shutdown", () => signal("idle", currentTitle));
+  pi.on("tool_execution_end", (event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
+    signal(
+      event.isError ? "failed" : "completed",
+      toolTitle(event.toolName, event.args),
+      event.toolCallId,
+    );
+  }});
+  pi.on("agent_settled", (_event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
+    signal("completed", currentTitle);
+  }});
+  pi.on("session_shutdown", (_event, ctx) => {{
+    sessionId = ctx.sessionManager.getSessionId();
+    signal("idle", currentTitle);
+  }});
 }}
 "#
     )
@@ -490,6 +526,14 @@ mod tests {
         );
         assert_eq!(document["model"].as_str(), Some("gpt-5"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pi_extension_tracks_parallel_tool_calls_separately() {
+        let source = pi_extension_source();
+        assert!(source.contains("event.toolCallId"));
+        assert!(source.contains("toolTitle(event.toolName, event.args)"));
+        assert!(source.contains("event.isError ? \"failed\" : \"completed\""));
     }
 
     #[test]

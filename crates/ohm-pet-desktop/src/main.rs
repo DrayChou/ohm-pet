@@ -697,19 +697,22 @@ impl DesktopPet {
         self.roam = None;
         let now = Instant::now();
         let previous_state = self.tasks.animation_state();
+        let should_notify = signal.source != "pi" || signal.task_id.as_deref() == Some("current");
         let update = self.tasks.apply(&signal, now);
         let aggregate = self.tasks.animation_state();
         if aggregate != previous_state {
             self.state.set_state(aggregate, now, None);
         }
-        if let Some(task) = update.finished {
-            let elapsed = task.elapsed(now);
-            notify_task(TaskNotification {
-                source: task.source,
-                title: task.title,
-                event: task.event,
-                elapsed,
-            });
+        if should_notify {
+            if let Some(task) = update.finished {
+                let elapsed = task.elapsed(now);
+                notify_task(TaskNotification {
+                    source: task.source,
+                    title: task.title,
+                    event: task.event,
+                    elapsed,
+                });
+            }
         }
         if update.changed {
             self.refresh_tray();
